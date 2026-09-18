@@ -89,3 +89,25 @@ def test_old_database_is_migrated(tmp_path):
     c.close()
     ep = Store(db).episode("g")
     assert (ep.revision, ep.merged_at) == (0, None)
+
+
+def test_rss_published_is_iso_so_pending_is_newest_first(tmp_path):
+    from ripperr.feeds import parse_feed
+
+    def item(guid, date):
+        return (f'<item><guid>{guid}</guid><title>{guid}</title><pubDate>{date}</pubDate>'
+                f'<enclosure url="http://a/{guid}.mp3" type="audio/mpeg"/></item>')
+
+    xml = ('<?xml version="1.0"?><rss version="2.0"><channel><title>T</title>'
+           + item("older", "Wed, 01 Jan 2025 08:00:00 GMT")   # "Wed" sorts after "Mon" as text
+           + item("newer", "Mon, 06 Jan 2025 08:00:00 GMT")
+           + "</channel></rss>")
+    _, episodes = parse_feed(xml)
+    assert {e["guid"]: e["published"] for e in episodes} == {
+        "older": "2025-01-01T08:00:00+00:00", "newer": "2025-01-06T08:00:00+00:00"}
+
+    rip = Ripperr(Config(root=tmp_path), log=lambda _: None)
+    fid = rip.add_feed("http://feed").id
+    for e in episodes:
+        rip.store.add_episode(fid, e["guid"], e["title"], e["published"], e["audio_url"])
+    assert [e.guid for e in rip.store.pending()] == ["newer", "older"]

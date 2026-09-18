@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import hashlib
 import re
+from datetime import datetime, timezone
 from pathlib import Path
 
 import feedparser
@@ -23,6 +24,13 @@ def _slug(text: str, limit: int = 60) -> str:
     text = re.sub(r"[^\w\s-]", "", text or "").strip()
     text = re.sub(r"[\s_]+", "-", text)
     return text[:limit].strip("-").lower() or "episode"
+
+
+def _published(entry) -> str | None:
+    """ISO 8601 UTC, so the stored string sorts chronologically. Feeds give RFC 2822
+    text ("Thu, 18 Sep 2025 ..."), which sorts by weekday name."""
+    t = getattr(entry, "published_parsed", None)
+    return datetime(*t[:6], tzinfo=timezone.utc).isoformat() if t else None
 
 
 def _enclosure_url(entry) -> str | None:
@@ -61,7 +69,7 @@ def parse_feed(url: str) -> tuple[str | None, list[dict]]:
             {
                 "guid": str(guid),
                 "title": getattr(entry, "title", None),
-                "published": getattr(entry, "published", None),
+                "published": _published(entry),
                 "audio_url": audio_url,
             }
         )

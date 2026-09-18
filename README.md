@@ -102,7 +102,8 @@ Everything returned is a plain dataclass from `models.py`. Episodes are keyed by
 `guid`, which is stable across storage backends; `Episode.revision` increases
 whenever a transcript is rewritten, so a consumer knows when to re-read it.
 `episodes(updated_since=...)` is inclusive, so a poller should expect repeats and
-compare revisions. The CLI is a client of this same class.
+compare revisions. The CLI is a client of this same class. The full contract,
+including errors, ordering and consistency, is in [docs/api.md](docs/api.md).
 
 Reading (`episodes`, `transcript`, `search`) needs only the base dependencies;
 processing needs the `apple` extra and Apple Silicon.
