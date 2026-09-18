@@ -49,6 +49,26 @@ Set `PODPIPE_ROOT` to move the database and audio elsewhere (defaults to
 `~/podpipe`). `PODPIPE_ASR_MODEL` swaps the Whisper model;
 `PODPIPE_KEEP_AUDIO=0` deletes audio after processing.
 
+### YouTube
+
+Playlist URLs work as feeds (`uv pip install -e ".[youtube]"` for yt-dlp and its
+deno JS runtime). Audio is fetched with yt-dlp and transcribed like any other
+episode. `PODPIPE_YT_CAPTIONS=1` uses YouTube's auto-captions instead of Whisper
+to skip the transcription pass; they have word timing but no speakers, so
+diarization still runs, and they garble proper nouns more than Whisper does.
+
+### Player names
+
+Whisper spells names by ear ("Drake May", "Basial Tootin"). `podpipe players`
+builds a roster of active QB/RB/WR/TE/K from Sleeper's public API (or
+`--from players.json` to reuse a copy) and saves it as `players.txt` in the data
+directory. When that file exists, capitalised word pairs that sound like a roster
+name (metaphone, cutoff `Config.name_match`) are respelled before the merge, and
+each swap is printed. It only fixes full first+last pairs, so lone surnames pass
+through, and it can misfire on non-roster people such as coaches; check the log.
+Raw ASR output is never modified, so `podpipe remerge <id>` re-applies it after
+you change the roster or cutoff.
+
 For unattended operation, a launchd agent or cron job running
 `podpipe sync && podpipe run` is all you need.
 

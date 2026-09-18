@@ -82,3 +82,42 @@ def test_fill_orphans_matches_original_implementation():
         _fill_orphans_reference(expected, 0.5)
         _fill_orphans(actual, 0.5)
         assert actual == expected
+
+
+def test_json3_captions_to_words():
+    from podpipe.youtube import captions_reliable, json3_to_result
+
+    data = {
+        "events": [
+            {"tStartMs": 1000, "segs": [{"utf8": ">>"}, {"utf8": "Hello", "tOffsetMs": 0}, {"utf8": " there", "tOffsetMs": 400}]},
+            {"tStartMs": 3000, "segs": [{"utf8": "[Music]"}]},
+            {"tStartMs": 4000, "segs": [{"utf8": "bye"}]},
+        ]
+    }
+    words = json3_to_result(data)["segments"][0]["words"]
+    assert [(x["word"], x["start"]) for x in words] == [("Hello", 1.0), ("there", 1.4), ("bye", 4.0)]
+    assert words[0]["end"] == 1.4 and words[1]["end"] == 2.4  # capped at 1s
+    assert captions_reliable({"segments": [{"words": words}]}, duration=3)
+    assert not captions_reliable({"segments": [{"words": words}]}, duration=300)
+    assert json3_to_result({"events": [{"tStartMs": 0, "segs": [{"utf8": "a"}, {"utf8": "b"}]}]}) is None
+
+
+def test_player_names_respelled_from_roster():
+    from podpipe.players import correct
+
+    roster = ["Bhayshul Tuten", "Drake Maye", "Justin Herbert", "Joe Burrow", "Michael Penix", "Adonai Mitchell"]
+    words = [
+        w(0, 0.4, "Basial"), w(0.4, 0.9, "Tootin,"),
+        w(1, 1.3, "and"),
+        w(1.3, 1.6, "Drake"), w(1.6, 1.9, "May's"),  # possessive kept
+        w(2, 2.3, "Justin"), w(2.3, 2.7, "Herbert"),  # already right: untouched
+        w(3, 3.3, "Green"), w(3.3, 3.6, "Bay"),  # not a player: untouched
+        w(4, 4.3, "Joe"), w(4.3, 4.6, "Brady"),  # a coach, close-ish to Burrow: untouched
+        w(5, 5.2, "And"), w(5.2, 5.5, "Michael"), w(5.5, 5.8, "Penix"),  # must not become Adonai Mitchell
+    ]
+    out, fixes = correct(words, roster)
+    assert [x["text"] for x in out] == [
+        "Bhayshul Tuten,", "and", "Drake Maye's", "Justin", "Herbert", "Green", "Bay", "Joe", "Brady", "And", "Michael", "Penix",
+    ]
+    assert out[0]["start"] == 0 and out[0]["end"] == 0.9  # spans both words for the merge
+    assert fixes == {("Basial Tootin", "Bhayshul Tuten"): 1, ("Drake May", "Drake Maye"): 1}

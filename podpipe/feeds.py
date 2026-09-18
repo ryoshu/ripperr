@@ -13,6 +13,8 @@ from pathlib import Path
 import feedparser
 import requests
 
+from . import youtube
+
 UA = "podpipe/0.1 (personal archival tool)"
 CHUNK = 1 << 16
 
@@ -38,6 +40,8 @@ def _enclosure_url(entry) -> str | None:
 def parse_feed(url: str) -> tuple[str | None, list[dict]]:
     """Return (feed_title, episodes). Episodes are dicts, newest first as the
     feed presents them."""
+    if youtube.is_youtube(url):
+        return youtube.parse_playlist(url)
     parsed = feedparser.parse(url, agent=UA)
     if parsed.bozo and not parsed.entries:
         raise RuntimeError(f"could not parse feed {url}: {parsed.bozo_exception}")
@@ -66,6 +70,8 @@ def parse_feed(url: str) -> tuple[str | None, list[dict]]:
 
 def download(audio_url: str, dest_dir: Path, title: str | None) -> Path:
     """Stream an episode to disk. Returns the path to the raw downloaded file."""
+    if youtube.is_youtube(audio_url):
+        return youtube.download(audio_url, dest_dir)
     dest_dir.mkdir(parents=True, exist_ok=True)
     digest = hashlib.sha1(audio_url.encode()).hexdigest()[:10]
     suffix = Path(audio_url.split("?")[0]).suffix or ".mp3"

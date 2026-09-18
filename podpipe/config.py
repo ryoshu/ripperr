@@ -34,11 +34,24 @@ class Config:
     max_turn_gap: float = 2.0  # seconds of silence that forces a new turn
     orphan_word_gap: float = 0.5  # how far a word may reach for a neighbouring speaker
 
+    # Phonetic similarity (0-1) needed to respell a heard name as a roster name.
+    name_match: float = 0.95
+
+    # Opt in to YouTube auto-captions instead of Whisper. Off by default: on a
+    # fantasy-football episode they agreed with Whisper on ~95% of tokens but
+    # mangled player names (Bijan -> "Bejian"), which is what you search for.
+    use_captions: bool = field(default_factory=lambda: os.environ.get("PODPIPE_YT_CAPTIONS", "0") == "1")
+
     keep_audio: bool = field(default_factory=lambda: os.environ.get("PODPIPE_KEEP_AUDIO", "1") != "0")
 
     @property
     def db_path(self) -> Path:
         return self.root / "podpipe.db"
+
+    @property
+    def players_path(self) -> Path:
+        """Roster, one name per line. Built by `podpipe players`; optional."""
+        return self.root / "players.txt"
 
     @property
     def audio_dir(self) -> Path:

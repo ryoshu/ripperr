@@ -10,10 +10,12 @@
 from __future__ import annotations
 
 import argparse
+import json
 import sys
 from pathlib import Path
 
 from .config import CONFIG
+from . import players
 from .pipeline import Processor, remerge, sync_feeds
 from .store import Store
 
@@ -110,6 +112,14 @@ def cmd_remerge(args, store: Store) -> int:
     return 0
 
 
+def cmd_players(args, store: Store) -> int:
+    raw = json.loads(Path(args.source).read_text()) if args.source else players.fetch_sleeper()
+    names = players.roster_from_sleeper(raw)
+    CONFIG.players_path.write_text("\n".join(names) + "\n")
+    print(f"{len(names)} players -> {CONFIG.players_path}")
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="podpipe", description=__doc__)
     sub = p.add_subparsers(dest="command", required=True)
@@ -146,6 +156,10 @@ def build_parser() -> argparse.ArgumentParser:
     rm = sub.add_parser("remerge", help="redo speaker merge from cached model output")
     rm.add_argument("episode_id", type=int)
     rm.set_defaults(func=cmd_remerge)
+
+    pl = sub.add_parser("players", help="build the NFL roster used to fix misheard names")
+    pl.add_argument("--from", dest="source", help="Sleeper players JSON to read instead of fetching")
+    pl.set_defaults(func=cmd_players)
 
     return p
 
