@@ -1,4 +1,4 @@
-# podpipe
+# ripperr
 
 Subscribe to podcast feeds, transcribe and diarize them locally on Apple Silicon,
 store everything in SQLite. No UI, no cloud, no CUDA.
@@ -37,46 +37,73 @@ pipeline, no Hugging Face token or gated-model acceptance is required.
 ## Usage
 
 ```bash
-podpipe add https://example.com/feed.xml
-podpipe sync                    # poll feeds, record new episodes
-podpipe run --limit 3           # download + transcribe + diarize
-podpipe show 12 --out ep12.md   # markdown transcript
-podpipe search "interest rates"
-podpipe status
+ripperr add https://example.com/feed.xml
+ripperr sync                    # poll feeds, record new episodes
+ripperr run --limit 3           # download + transcribe + diarize
+ripperr show 12 --out ep12.md   # markdown transcript
+ripperr search "interest rates"
+ripperr status
 ```
 
-Set `PODPIPE_ROOT` to move the database and audio elsewhere (defaults to
-`~/podpipe`). `PODPIPE_ASR_MODEL` swaps the Whisper model;
-`PODPIPE_KEEP_AUDIO=0` deletes audio after processing.
+Set `RIPPERR_ROOT` to move the database and audio elsewhere (defaults to
+`~/ripperr`). `RIPPERR_ASR_MODEL` swaps the Whisper model;
+`RIPPERR_KEEP_AUDIO=0` deletes audio after processing.
 
 ### YouTube
 
 Playlist URLs work as feeds (`uv pip install -e ".[youtube]"` for yt-dlp and its
 deno JS runtime). Audio is fetched with yt-dlp and transcribed like any other
-episode. `PODPIPE_YT_CAPTIONS=1` uses YouTube's auto-captions instead of Whisper
+episode. `RIPPERR_YT_CAPTIONS=1` uses YouTube's auto-captions instead of Whisper
 to skip the transcription pass; they have word timing but no speakers, so
 diarization still runs, and they garble proper nouns more than Whisper does.
 
-### Player names
+### Glossary
 
-Whisper spells names by ear ("Drake May", "Basial Tootin"). `podpipe players`
-builds a roster of active QB/RB/WR/TE/K from Sleeper's public API (or
-`--from players.json` to reuse a copy) and saves it as `players.txt` in the data
-directory. When that file exists, capitalised word pairs that sound like a roster
-name (metaphone, cutoff `Config.name_match`) are respelled before the merge, and
-each swap is printed. It only fixes full first+last pairs, so lone surnames pass
-through, and it can misfire on non-roster people such as coaches; check the log.
-Raw ASR output is never modified, so `podpipe remerge <id>` re-applies it after
-you change the roster or cutoff.
+Whisper spells names by ear ("Drake May", "Basial Tootin"). Give ripperr a list of
+terms it should know and it respells near-sound-alikes (metaphone match, cutoff
+`Config.glossary_match`) before the merge. Put one term per line in
+`glossary.txt` in the data directory (`#` comments allowed), or pass a list from
+Python. Only two-word terms (first + last name) are matched, so lone surnames pass
+through, and it can misfire on people who aren't in the list; each swap is stored
+with the episode (`Transcript.corrections`) so you can check. Raw ASR output is
+never modified, so `ripperr remerge <id>` re-applies a changed glossary in seconds.
+
+What goes in the glossary is up to the caller. ripperr has no idea what a player
+or a company is.
 
 For unattended operation, a launchd agent or cron job running
-`podpipe sync && podpipe run` is all you need.
+`ripperr sync && ripperr run` is all you need.
+
+## Python API
+
+Other code should use `ripperr.api.Ripperr`, not the database:
+
+```python
+from ripperr.api import Ripperr
+
+with Ripperr() as rip:
+    rip.process(limit=3, glossary=["Bhayshul Tuten", "Drake Maye"])
+    for ep in rip.episodes(status="done", updated_since=last_seen):
+        transcript = rip.transcript(ep.guid)   # episode, turns, corrections
+    rip.remerge(guid, glossary=new_terms)      # after the glossary changes
+    rip.search("interest rates")
+```
+
+Everything returned is a plain dataclass from `models.py`. Episodes are keyed by
+`guid`, which is stable across storage backends; `Episode.revision` increases
+whenever a transcript is rewritten, so a consumer knows when to re-read it.
+`episodes(updated_since=...)` is inclusive, so a poller should expect repeats and
+compare revisions. The CLI is a client of this same class.
 
 ## Layout
 
 | Module | Role |
 | --- | --- |
+| `api.py` | the public `Ripperr` class; CLI and other callers use only this |
+| `models.py` | plain dataclasses returned by the API |
 | `feeds.py` | RSS parsing, enclosure download |
+| `youtube.py` | YouTube playlists, audio via yt-dlp, optional captions |
+| `glossary.py` | phonetic respelling of names from a supplied term list |
 | `audio.py` | ffmpeg normalization to 16 kHz mono WAV |
 | `asr.py` | mlx-whisper, word-level timestamps |
 | `diarize.py` | Senko wrapper, segment normalization |
@@ -101,10 +128,10 @@ routinely, because a single Whisper segment often spans a speaker change.
 
 ## Caching and re-running
 
-ASR and diarization output are written to `raw/<episode_id>.{asr,diar}.json`
-before merging. `podpipe remerge <id>` redoes only the merge from that cache, so
+ASR and diarization output are written to `raw/<hash of guid>.{asr,diar}.json`
+before merging. `ripperr remerge <id>` redoes only the merge from that cache, so
 you can tune `max_turn_gap` or the orphan-word logic across a whole archive in
-seconds. `podpipe run --force` ignores the cache and re-runs the models.
+seconds. `ripperr run --force` ignores the cache and re-runs the models.
 
 ## Known rough edges
 

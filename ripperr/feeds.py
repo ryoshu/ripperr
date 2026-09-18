@@ -15,7 +15,7 @@ import requests
 
 from . import youtube
 
-UA = "podpipe/0.1 (personal archival tool)"
+UA = "ripperr/0.1 (personal archival tool)"
 CHUNK = 1 << 16
 
 

@@ -1,5 +1,6 @@
-from podpipe.merge import UNKNOWN, merge
-from podpipe.store import Store
+from ripperr.merge import UNKNOWN, merge
+from ripperr.models import Turn
+from ripperr.store import Store
 
 
 def w(start, end, text):
@@ -31,16 +32,16 @@ def test_long_pause_splits_turn():
 
 def test_search_falls_back_on_bad_fts_syntax(tmp_path):
     store = Store(tmp_path / "t.db")
-    fid = store.add_feed("http://f")
+    fid = store.add_feed("http://f").id
     store.add_episode(fid, "g", "T", None, "http://a")
-    store.replace_turns(1, [{"speaker": "A", "start": 0, "end": 1, "text": "don't stop"}])
+    store.replace_turns(1, [Turn(0, "A", 0, 1, "don't stop")])
     assert store.search("don't")  # raw MATCH raises OperationalError
     store.close()
 
 
 def test_pending_skips_errors_unless_asked(tmp_path):
     store = Store(tmp_path / "t.db")
-    fid = store.add_feed("http://f")
+    fid = store.add_feed("http://f").id
     store.add_episode(fid, "g", "T", None, "http://a")
     store.set_status(1, "error")
     assert store.pending() == []
@@ -65,7 +66,7 @@ def _fill_orphans_reference(words, orphan_gap):
 def test_fill_orphans_matches_original_implementation():
     import random
 
-    from podpipe.merge import _fill_orphans
+    from ripperr.merge import _fill_orphans
 
     rng = random.Random(0)
     for _ in range(500):
@@ -85,7 +86,7 @@ def test_fill_orphans_matches_original_implementation():
 
 
 def test_json3_captions_to_words():
-    from podpipe.youtube import captions_reliable, json3_to_result
+    from ripperr.youtube import captions_reliable, json3_to_result
 
     data = {
         "events": [
@@ -102,10 +103,10 @@ def test_json3_captions_to_words():
     assert json3_to_result({"events": [{"tStartMs": 0, "segs": [{"utf8": "a"}, {"utf8": "b"}]}]}) is None
 
 
-def test_player_names_respelled_from_roster():
-    from podpipe.players import correct
+def test_names_respelled_from_glossary():
+    from ripperr.glossary import correct
 
-    roster = ["Bhayshul Tuten", "Drake Maye", "Justin Herbert", "Joe Burrow", "Michael Penix", "Adonai Mitchell"]
+    terms = ["Bhayshul Tuten", "Drake Maye", "Justin Herbert", "Joe Burrow", "Michael Penix", "Adonai Mitchell"]
     words = [
         w(0, 0.4, "Basial"), w(0.4, 0.9, "Tootin,"),
         w(1, 1.3, "and"),
@@ -115,7 +116,7 @@ def test_player_names_respelled_from_roster():
         w(4, 4.3, "Joe"), w(4.3, 4.6, "Brady"),  # a coach, close-ish to Burrow: untouched
         w(5, 5.2, "And"), w(5.2, 5.5, "Michael"), w(5.5, 5.8, "Penix"),  # must not become Adonai Mitchell
     ]
-    out, fixes = correct(words, roster)
+    out, fixes = correct(words, terms)
     assert [x["text"] for x in out] == [
         "Bhayshul Tuten,", "and", "Drake Maye's", "Justin", "Herbert", "Green", "Bay", "Joe", "Brady", "And", "Michael", "Penix",
     ]

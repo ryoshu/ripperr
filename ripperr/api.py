@@ -1,0 +1,119 @@
+"""The public interface. The CLI and any other caller (e.g. another service) go
+through this class and never touch the storage layer.
+
+    with Ripperr() as rip:
+        rip.add_feed("https://example.com/feed.xml")
+        rip.sync()
+        rip.process(limit=3, glossary=["Bhayshul Tuten", "Drake Maye"])
+        for ep in rip.episodes(status="done", updated_since=last_seen):
+            transcript = rip.transcript(ep.guid)
+
+Episodes are identified by `guid`, which is stable across storage backends. An
+int refers to the local `Episode.id` instead, which the CLI uses for convenience.
+`Episode.revision` increases whenever a transcript is rewritten, so a consumer can
+tell when it needs to re-read one.
+"""
+
+from __future__ import annotations
+
+from .config import CONFIG, Config
+from .glossary import load as load_glossary
+from .models import Episode, Feed, Hit, Transcript
+from .pipeline import Log, Processor, remerge, sync_feeds
+from .store import Store
+
+
+class Ripperr:
+    def __init__(self, cfg: Config | None = None, *, store: Store | None = None, log: Log = print):
+        self.cfg = cfg or CONFIG
+        self.cfg.ensure_dirs()
+        self.store = store or Store(self.cfg.db_path)
+        self.log = log
+
+    def __enter__(self) -> Ripperr:
+        return self
+
+    def __exit__(self, *exc) -> None:
+        self.close()
+
+    def close(self) -> None:
+        self.store.close()
+
+    # ---- ingest ----------------------------------------------------------
+
+    def add_feed(self, url: str) -> Feed:
+        return self.store.add_feed(url)
+
+    def feeds(self) -> list[Feed]:
+        return self.store.feeds()
+
+    def sync(self) -> int:
+        """Poll every feed and record new episodes. Returns how many were new."""
+        return sync_feeds(self.store, self.log)
+
+    def process(
+        self,
+        limit: int | None = None,
+        *,
+        glossary: list[str] | None = None,
+        retry_errors: bool = False,
+        force: bool = False,
+    ) -> list[Episode]:
+        """Download, transcribe, diarize and merge pending episodes, newest first.
+
+        `glossary` is a list of terms (player names, say) to respell misheard
+        names to. None falls back to the glossary file, if there is one; an empty
+        list turns the glossary off. Returns the processed episodes as they now stand.
+        """
+        todo = self.store.pending(limit=limit, retry_errors=retry_errors)
+        if not todo:
+            return []
+        self.log(f"processing {len(todo)} episode(s)")
+        proc = Processor(self.cfg, self.log, self._terms(glossary))
+        for ep in todo:
+            proc.process(self.store, ep, force=force)
+        return [self.store.episode(ep.guid) for ep in todo]
+
+    def remerge(self, ref: str | int, *, glossary: list[str] | None = None) -> Episode:
+        """Redo the glossary and merge stages from cached model output. Cheap, so
+        run it after changing the glossary. Bumps the episode's revision."""
+        ep = self._episode(ref)
+        remerge(self.store, self.cfg, ep, self._terms(glossary), self.log)
+        return self.store.episode(ep.guid)
+
+    # ---- read ------------------------------------------------------------
+
+    def episode(self, ref: str | int) -> Episode | None:
+        if isinstance(ref, int):
+            return self.store.episode_by_id(ref)
+        return self.store.episode(ref)
+
+    def episodes(
+        self, *, status: str | None = None, updated_since: str | None = None
+    ) -> list[Episode]:
+        """Episodes in id order. `updated_since` is an inclusive ISO 8601 timestamp,
+        so a poller should expect repeats and compare `revision`."""
+        return self.store.episodes(status=status, updated_since=updated_since)
+
+    def transcript(self, ref: str | int) -> Transcript | None:
+        ep = self.episode(ref)
+        if ep is None:
+            return None
+        return Transcript(ep, self.store.turns(ep.id), self.store.corrections(ep.id))
+
+    def search(self, query: str, limit: int = 20) -> list[Hit]:
+        return self.store.search(query, limit)
+
+    def stats(self) -> dict[str, int]:
+        return self.store.stats()
+
+    # ---- internals -------------------------------------------------------
+
+    def _episode(self, ref: str | int) -> Episode:
+        ep = self.episode(ref)
+        if ep is None:
+            raise LookupError(f"no episode {ref}")
+        return ep
+
+    def _terms(self, glossary: list[str] | None) -> list[str]:
+        return glossary if glossary is not None else load_glossary(self.cfg.glossary_path)

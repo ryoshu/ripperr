@@ -1,10 +1,14 @@
-"""Fix misheard NFL player names in ASR output using a roster.
+"""Respell misheard proper names in ASR output using a glossary of known terms.
 
 Whisper spells names the way they sound ("Basial Tootin" for Bhayshul Tuten), so
-we compare each capitalised word pair to the roster by phonetic key (metaphone)
-and swap in the roster spelling when it's a near-exact sound match. Only full
-first+last pairs are touched, and every swap is reported, so a false positive
-shows up in the log instead of silently rewriting the transcript.
+we compare each capitalised word pair to the glossary by phonetic key (metaphone)
+and swap in the glossary spelling when it's a near-exact sound match. Only
+two-word terms (first + last name) are matched, and every swap is reported, so a
+false positive shows up in the corrections list instead of silently rewriting the
+transcript.
+
+The glossary is domain data supplied by the caller; nothing here knows about any
+particular subject.
 """
 
 from __future__ import annotations
@@ -16,37 +20,16 @@ from typing import Any
 
 import jellyfish as jf
 
-SLEEPER_URL = "https://api.sleeper.app/v1/players/nfl"
-FANTASY_POSITIONS = {"QB", "RB", "WR", "TE", "K"}
-
 # core word, then an optional possessive and trailing punctuation
 _TOKEN = re.compile(r"^(?P<core>[A-Za-z][A-Za-z'’\-]*?)(?P<tail>(?:['’]s)?\W*)$")
 
 
-def fetch_sleeper() -> dict[str, Any]:
-    import requests
-
-    resp = requests.get(SLEEPER_URL, timeout=60)
-    resp.raise_for_status()
-    return resp.json()
-
-
-def roster_from_sleeper(raw: dict[str, Any]) -> list[str]:
-    """Active, rostered fantasy-position players, by full name."""
-    return sorted(
-        {
-            p["full_name"]
-            for p in raw.values()
-            if p.get("active")
-            and p.get("team")
-            and p.get("position") in FANTASY_POSITIONS
-            and p.get("full_name")
-        }
-    )
-
-
 def load(path: Path) -> list[str]:
-    return path.read_text().splitlines() if path.exists() else []
+    """Terms from a text file, one per line; blank lines and #-comments ignored."""
+    if not path.exists():
+        return []
+    lines = (ln.strip() for ln in path.read_text().splitlines())
+    return [ln for ln in lines if ln and not ln.startswith("#")]
 
 
 def _norm(s: str) -> str:
@@ -58,12 +41,12 @@ def _key(s: str) -> str:
 
 
 def correct(
-    words: list[dict[str, Any]], roster: list[str], threshold: float = 0.95
+    words: list[dict[str, Any]], terms: list[str], threshold: float = 0.95
 ) -> tuple[list[dict[str, Any]], Counter]:
-    """Return (words with player names respelled, Counter of (heard, fixed))."""
-    known = {_norm(n) for n in roster}
-    keys = [(n, _key(n)) for n in roster]
-    best: dict[str, str | None] = {}  # heard -> roster name, cached per distinct pair
+    """Return (words with names respelled, Counter of (heard, fixed))."""
+    known = {_norm(n) for n in terms}
+    keys = [(n, _key(n)) for n in terms]
+    best: dict[str, str | None] = {}  # heard -> glossary term, cached per distinct pair
     fixes: Counter = Counter()
     out: list[dict[str, Any]] = []
 
