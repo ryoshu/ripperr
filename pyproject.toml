@@ -19,9 +19,10 @@ youtube = [
 ]
 apple = [
     "mlx-whisper>=0.4",
-    # Senko has no PyPI release and its output shape has changed between versions
-    # (see diarize.normalize_segments), so pin the commit that was tested. To
-    # upgrade: bump the SHA, run a real episode, then run the tests.
+    # Senko is on PyPI (0.1.0), but its output shape has changed between versions
+    # (see diarize.normalize_segments), so pin the exact commit that was tested
+    # for reproducibility. To upgrade: bump the SHA (or switch to a release pin),
+    # run a real episode, then run the tests. Senko needs Python < 3.14.
     "senko @ git+https://github.com/narcotic-sh/senko.git@1bcb09041bfa170b4a5a4b0af92f66eff76204d5",
 ]
 

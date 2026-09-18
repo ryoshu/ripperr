@@ -31,9 +31,12 @@ uv venv --python 3.13 && source .venv/bin/activate
 uv pip install -e ".[apple]"    # mlx-whisper and Senko, pinned to a tested commit
 ```
 
-Senko has no PyPI release, so the `apple` extra installs it from a pinned git commit
-(the one this code was tested against); upgrading means bumping the SHA in
-`pyproject.toml` and re-running a real episode. Senko needs the Xcode Command Line Tools and macOS 14+. Unlike pyannote's own
+The `apple` extra installs Senko from a pinned git commit, the one this code was
+tested against. Senko does have a PyPI release now (0.1.0), but its output shape has
+changed between versions, so an exact pin is for reproducibility, not because
+packaging requires it. To upgrade, bump the SHA in `pyproject.toml` and re-run a real
+episode. Senko needs Python below 3.14, the Xcode Command Line Tools and macOS 14+.
+Unlike pyannote's own
 pipeline, no Hugging Face token or gated-model acceptance is required.
 
 ## Usage

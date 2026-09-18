@@ -149,6 +149,16 @@ class Store:
         self.conn.close()
 
     @contextmanager
+    def snapshot(self) -> Iterator[None]:
+        """One consistent view for several reads. In WAL mode a read transaction
+        sees the database as of its first read, however much others commit meanwhile."""
+        self.conn.execute("BEGIN")
+        try:
+            yield
+        finally:
+            self.conn.rollback()
+
+    @contextmanager
     def tx(self) -> Iterator[sqlite3.Connection]:
         with self.conn:
             yield self.conn
@@ -267,6 +277,14 @@ class Store:
         params.append(episode_id)
         with self.tx() as c:
             c.execute(f"UPDATE episodes SET {', '.join(sets)} WHERE id = ?", params)
+
+    def clear_audio(self, episode_id: int) -> None:
+        """Forget the source audio path, after the file has been deleted."""
+        with self.tx() as c:
+            c.execute(
+                "UPDATE episodes SET audio_path = NULL, updated_at = ? WHERE id = ?",
+                (_now(), episode_id),
+            )
 
     # ---- transcripts -----------------------------------------------------
 

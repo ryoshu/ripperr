@@ -263,6 +263,61 @@ def test_failure_before_commit_marks_error_and_stores_no_transcript(tmp_path, mo
     assert rip.transcript(guid).turns == []
 
 
+# ---- consistent reads ------------------------------------------------------
+
+
+def test_transcript_is_one_consistent_snapshot_even_if_another_process_commits(tmp_path, monkeypatch):
+    rip, guid = make(tmp_path)
+    rip.store.replace_turns(1, [Turn(0, "A", 0, 1, "old text")])  # revision 1
+    other = Store(rip.cfg.db_path)  # stands in for a second process
+
+    real_turns = rip.store.turns
+
+    def racing(episode_id):
+        other.replace_turns(1, [Turn(0, "A", 0, 1, "new text")])  # revision 2 lands mid-read
+        return real_turns(episode_id)
+
+    monkeypatch.setattr(rip.store, "turns", racing)
+    tr = rip.transcript(guid)
+    assert tr.episode.revision == 1 and [t.text for t in tr.turns] == ["old text"]
+
+    monkeypatch.undo()
+    tr = rip.transcript(guid)  # the next read sees the new revision, all of it
+    assert tr.episode.revision == 2 and [t.text for t in tr.turns] == ["new text"]
+
+
+# ---- audio cleanup ---------------------------------------------------------
+
+
+def test_audio_deleted_and_path_cleared_when_downloaded_in_the_same_run(tmp_path, monkeypatch):
+    rip, guid = make(tmp_path)
+    rip.cfg.keep_audio = False
+    src, wav = rip.cfg.audio_dir / "ep.mp3", rip.cfg.audio_dir / "ep.16k.wav"
+    monkeypatch.setattr(pipeline.feeds, "download", lambda url, d, title: (src.write_bytes(b"x"), src)[1])
+    monkeypatch.setattr(pipeline.audio, "to_wav16k", lambda s, d: (wav.write_bytes(b"y"), wav)[1])
+    monkeypatch.setattr(pipeline.audio, "duration_seconds", lambda p: 12.0)
+
+    assert rip.episode(guid).audio_path is None  # so this run has to download it
+    Processor(rip.cfg, lambda _: None).process(rip.store, rip.episode(guid))
+
+    ep = rip.episode(guid)
+    assert not src.exists() and not wav.exists()
+    assert (ep.status, ep.audio_path, ep.duration) == ("done", None, 12.0)
+
+
+def test_audio_path_kept_when_the_source_could_not_be_deleted(tmp_path, monkeypatch):
+    rip, guid = make(tmp_path)
+    rip.cfg.keep_audio = False
+    stuck = tmp_path / "stuck"
+    stuck.mkdir()  # unlink() on a directory fails, standing in for any deletion error
+    rip.store.set_status(1, "downloaded", audio_path=str(stuck))
+    monkeypatch.setattr(Processor, "_ensure_audio", lambda self, store, ep: tmp_path / "ep.16k.wav")
+
+    Processor(rip.cfg, lambda _: None).process(rip.store, rip.episode(guid))
+    ep = rip.episode(guid)
+    assert (ep.status, ep.audio_path) == ("done", str(stuck))  # still done, still honest about the file
+
+
 # ---- packaging -------------------------------------------------------------
 
 

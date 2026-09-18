@@ -80,9 +80,11 @@ change, including a metadata refresh, so a title fix shows up in
 `episodes(updated_since=...)` with the same `revision`.
 
 Writing a transcript, bumping the revision, storing the corrections and marking the
-episode `done` (clearing `error`) happen in one transaction. A reader never sees a
-new transcript on an episode that is not `done`, and a failure part-way leaves the
-previous transcript, revision and status in place.
+episode `done` (clearing `error`) happen in one transaction, so a failure part-way
+leaves the previous transcript, revision and status in place. `transcript()` reads
+under one snapshot (see "Concurrency and consistency"), so what it returns comes
+from a single revision. Two separate calls, such as `episodes()` then
+`transcript()`, are two snapshots: compare `revision` between them.
 
 A poller should:
 
@@ -109,7 +111,8 @@ positions across revisions.
   the data directory, or `RIPPERR_GLOSSARY`); `[]` turns the glossary off.
 - Only the work up to that transaction can mark an episode `error`. Once the
   transcript is stored, a failure while deleting audio (`keep_audio` off) is logged
-  and the episode stays `done`.
+  and the episode stays `done`. When the source audio is deleted, `audio_path` is
+  cleared (`None`); if deletion fails it is left set, because the file still exists.
 - Model output is cached, so re-processing after a merge change, a glossary change
   or a crash skips the expensive steps. `force=True` ignores the cache.
 - Cache files are written to a temporary file and renamed into place, so an
@@ -145,9 +148,10 @@ the turns. Matching rules and limits are in the README.
   other threads get `sqlite3.ProgrammingError`. Create one instance per thread.
 - The database uses WAL mode, so a second process can read while another writes.
   This has not been tested under load.
-- `transcript()` reads the episode, turns and corrections in separate queries. If
-  another process rewrites the transcript in between, you can get a mix. After
-  reading, call `episode(guid)` again; if `revision` changed, read again.
+- `transcript()` reads the episode, turns and corrections inside one SQLite read
+  transaction, so they always belong to the same revision even if another process
+  commits a rewrite while it runs. Other methods are single queries. Anything that
+  combines several calls sees several snapshots.
 - Two processes running `process` on the same database can pick up the same
   episode. Run one at a time.
 

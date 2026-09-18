@@ -96,10 +96,11 @@ class Ripperr:
         return self.store.episodes(status=status, updated_since=updated_since)
 
     def transcript(self, ref: str | int) -> Transcript | None:
-        ep = self.episode(ref)
-        if ep is None:
-            return None
-        return Transcript(ep, self.store.turns(ep.id), self.store.corrections(ep.id))
+        with self.store.snapshot():  # episode, turns and corrections from one revision
+            ep = self.episode(ref)
+            if ep is None:
+                return None
+            return Transcript(ep, self.store.turns(ep.id), self.store.corrections(ep.id))
 
     def search(self, query: str, limit: int = 20) -> list[Hit]:
         return self.store.search(query, limit)

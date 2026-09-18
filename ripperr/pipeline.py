@@ -161,6 +161,7 @@ class Processor:
         current = store.episode(episode.guid)  # `episode` predates a download in this run
         if current and current.audio_path:
             Path(current.audio_path).unlink(missing_ok=True)
+            store.clear_audio(episode.id)  # only once the file is really gone
 
     def _ensure_asr(self, episode: Episode, wav: Path, force: bool) -> dict[str, Any]:
         cached = self.cfg.raw_path(episode.guid, "asr")
