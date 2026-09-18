@@ -28,7 +28,7 @@ def parse_playlist(url: str) -> tuple[str | None, list[dict]]:
         info = y.extract_info(url, download=False)
     episodes = [
         {
-            "guid": f"yt:{e['id']}",
+            "source_guid": f"yt:{e['id']}",
             "title": e["title"],
             "published": None,
             "audio_url": e["url"],

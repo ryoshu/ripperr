@@ -67,7 +67,7 @@ def parse_feed(url: str) -> tuple[str | None, list[dict]]:
             guid = hashlib.sha1(audio_url.encode()).hexdigest()
         episodes.append(
             {
-                "guid": str(guid),
+                "source_guid": str(guid),
                 "title": getattr(entry, "title", None),
                 "published": _published(entry),
                 "audio_url": audio_url,

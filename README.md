@@ -28,11 +28,12 @@ Both run on the same normalized 16 kHz mono WAV, so the conversion happens once.
 ```bash
 brew install ffmpeg
 uv venv --python 3.13 && source .venv/bin/activate
-uv pip install -e ".[apple]"    # includes mlx-whisper
-uv pip install "git+https://github.com/narcotic-sh/senko.git"
+uv pip install -e ".[apple]"    # mlx-whisper and Senko, pinned to a tested commit
 ```
 
-Senko needs the Xcode Command Line Tools and macOS 14+. Unlike pyannote's own
+Senko has no PyPI release, so the `apple` extra installs it from a pinned git commit
+(the one this code was tested against); upgrading means bumping the SHA in
+`pyproject.toml` and re-running a real episode. Senko needs the Xcode Command Line Tools and macOS 14+. Unlike pyannote's own
 pipeline, no Hugging Face token or gated-model acceptance is required.
 
 ## Usage

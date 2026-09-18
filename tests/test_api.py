@@ -1,99 +1,86 @@
 import json
+import re
+import sqlite3
+import tomllib
+from pathlib import Path
 
+import pytest
+
+from ripperr import pipeline
 from ripperr.api import Ripperr
 from ripperr.config import Config
-
-GUID = "ep-1"
+from ripperr.models import Turn
+from ripperr.pipeline import Processor, _read_cache, _write_cache
+from ripperr.store import Store, public_guid
 
 
 def make(tmp_path):
     """A Ripperr with one episode whose model output is already cached, so
-    remerge runs without any model, network or audio."""
+    remerge runs without any model, network or audio. Returns (rip, guid)."""
     cfg = Config(root=tmp_path)
     rip = Ripperr(cfg, log=lambda _: None)
     fid = rip.add_feed("http://feed").id
-    rip.store.add_episode(fid, GUID, "Ep 1", None, "http://a")
+    rip.store.add_episode(fid, "ep-1", "Ep 1", None, "http://a")
+    guid = rip.episodes()[0].guid
     words = [
         {"start": 0, "end": 0.4, "word": "Basial"}, {"start": 0.4, "end": 0.9, "word": "Tootin"},
         {"start": 1, "end": 1.5, "word": "runs"},
     ]
-    cfg.raw_path(GUID, "asr").write_text(json.dumps({"segments": [{"words": words}]}))
-    cfg.raw_path(GUID, "diar").write_text(json.dumps([{"start": 0, "end": 2, "speaker": "SPEAKER_01"}]))
-    return rip
+    cfg.raw_path(guid, "asr").write_text(json.dumps({"segments": [{"words": words}]}))
+    cfg.raw_path(guid, "diar").write_text(json.dumps([{"start": 0, "end": 2, "speaker": "SPEAKER_01"}]))
+    return rip, guid
+
+
+# ---- the API surface -------------------------------------------------------
 
 
 def test_remerge_applies_glossary_and_bumps_revision(tmp_path):
-    rip = make(tmp_path)
-    assert rip.episode(GUID).revision == 0
+    rip, guid = make(tmp_path)
+    assert rip.episode(guid).revision == 0
 
-    ep = rip.remerge(GUID, glossary=["Bhayshul Tuten"])
+    ep = rip.remerge(guid, glossary=["Bhayshul Tuten"])
     assert (ep.status, ep.revision) == ("done", 1)
-    tr = rip.transcript(GUID)
+    tr = rip.transcript(guid)
     assert [t.text for t in tr.turns] == ["Bhayshul Tuten runs"]
     assert [(c.heard, c.fixed, c.count) for c in tr.corrections] == [("Basial Tootin", "Bhayshul Tuten", 1)]
 
     # a second remerge without a glossary rewrites the transcript: new revision, no corrections
-    ep = rip.remerge(GUID, glossary=[])
+    ep = rip.remerge(guid, glossary=[])
     assert ep.revision == 2
-    tr = rip.transcript(GUID)
+    tr = rip.transcript(guid)
     assert tr.turns[0].text == "Basial Tootin runs" and tr.corrections == []
 
 
 def test_glossary_file_is_the_default(tmp_path):
-    rip = make(tmp_path)
+    rip, guid = make(tmp_path)
     rip.cfg.glossary_path.write_text("# players\nBhayshul Tuten\n\n")
-    rip.remerge(GUID)
-    assert rip.transcript(GUID).turns[0].text == "Bhayshul Tuten runs"
+    rip.remerge(guid)
+    assert rip.transcript(guid).turns[0].text == "Bhayshul Tuten runs"
 
 
 def test_guid_and_local_id_both_address_an_episode(tmp_path):
-    rip = make(tmp_path)
-    ep = rip.episode(GUID)
-    assert rip.episode(ep.id).guid == GUID
+    rip, guid = make(tmp_path)
+    ep = rip.episode(guid)
+    assert (ep.source_guid, ep.guid) == ("ep-1", public_guid("http://feed", "ep-1"))
+    assert rip.episode(ep.id).guid == guid
     assert rip.episode("nope") is None and rip.transcript("nope") is None
 
 
 def test_episodes_filters_by_status_and_update_time(tmp_path):
-    rip = make(tmp_path)
+    rip, guid = make(tmp_path)
     assert rip.episodes(status="done") == []
-    rip.remerge(GUID, glossary=[])
+    rip.remerge(guid, glossary=[])
     done = rip.episodes(status="done")
-    assert [e.guid for e in done] == [GUID]
+    assert [e.guid for e in done] == [guid]
     assert rip.episodes(updated_since=done[0].updated_at) == done
     assert rip.episodes(updated_since="2999-01-01T00:00:00+00:00") == []
 
 
 def test_search_returns_typed_hits_with_guid(tmp_path):
-    rip = make(tmp_path)
-    rip.remerge(GUID, glossary=["Bhayshul Tuten"])
+    rip, guid = make(tmp_path)
+    rip.remerge(guid, glossary=["Bhayshul Tuten"])
     (hit,) = rip.search("Tuten")
-    assert hit.guid == GUID and "[Tuten]" in hit.snippet
-
-
-def test_old_database_is_migrated(tmp_path):
-    import sqlite3
-
-    from ripperr.store import Store
-
-    db = tmp_path / "old.db"
-    c = sqlite3.connect(db)
-    c.executescript(
-        """CREATE TABLE feeds (id INTEGER PRIMARY KEY, url TEXT NOT NULL UNIQUE, title TEXT, added_at TEXT NOT NULL);
-           CREATE TABLE episodes (id INTEGER PRIMARY KEY, feed_id INTEGER NOT NULL, guid TEXT NOT NULL UNIQUE,
-             title TEXT, published TEXT, audio_url TEXT NOT NULL, audio_path TEXT, duration REAL,
-             status TEXT NOT NULL DEFAULT 'new', error TEXT, updated_at TEXT NOT NULL);
-           INSERT INTO feeds VALUES (1, 'u', NULL, 't');
-           INSERT INTO episodes (feed_id, guid, published, audio_url, updated_at)
-             VALUES (1, 'g', 'Wed, 01 Jan 2025 08:00:00 GMT', 'a', 't');"""
-    )
-    c.commit()
-    c.close()
-    store = Store(db)
-    ep = store.episode("g")
-    assert (ep.revision, ep.merged_at, ep.published) == (
-        0, None, "2025-01-01T08:00:00+00:00")
-    store.add_episode(1, "newer", None, "2025-01-06T08:00:00+00:00", "b")
-    assert [ep.guid for ep in store.pending()] == ["newer", "g"]
+    assert hit.guid == guid and "[Tuten]" in hit.snippet
 
 
 def test_rss_published_is_iso_so_pending_is_newest_first(tmp_path):
@@ -108,11 +95,179 @@ def test_rss_published_is_iso_so_pending_is_newest_first(tmp_path):
            + item("newer", "Mon, 06 Jan 2025 08:00:00 GMT")
            + "</channel></rss>")
     _, episodes = parse_feed(xml)
-    assert {e["guid"]: e["published"] for e in episodes} == {
+    assert {e["source_guid"]: e["published"] for e in episodes} == {
         "older": "2025-01-01T08:00:00+00:00", "newer": "2025-01-06T08:00:00+00:00"}
 
     rip = Ripperr(Config(root=tmp_path), log=lambda _: None)
     fid = rip.add_feed("http://feed").id
     for e in episodes:
-        rip.store.add_episode(fid, e["guid"], e["title"], e["published"], e["audio_url"])
-    assert [e.guid for e in rip.store.pending()] == ["newer", "older"]
+        rip.store.add_episode(fid, e["source_guid"], e["title"], e["published"], e["audio_url"])
+    assert [e.source_guid for e in rip.store.pending()] == ["newer", "older"]
+
+
+# ---- episode identity ------------------------------------------------------
+
+
+def test_same_source_guid_in_two_feeds_stays_distinct(tmp_path):
+    store = Store(tmp_path / "t.db")
+    a, b = store.add_feed("http://a").id, store.add_feed("http://b").id
+    assert store.add_episode(a, "1", "A1", None, "http://a/1.mp3")
+    assert store.add_episode(b, "1", "B1", None, "http://b/1.mp3")
+    eps = store.episodes()
+    assert [e.title for e in eps] == ["A1", "B1"]
+    assert len({e.guid for e in eps}) == 2 and {e.source_guid for e in eps} == {"1"}
+
+
+def test_old_database_is_migrated(tmp_path):
+    db = tmp_path / "old.db"
+    c = sqlite3.connect(db)
+    c.executescript(
+        """CREATE TABLE feeds (id INTEGER PRIMARY KEY, url TEXT NOT NULL UNIQUE, title TEXT, added_at TEXT NOT NULL);
+           CREATE TABLE episodes (id INTEGER PRIMARY KEY, feed_id INTEGER NOT NULL, guid TEXT NOT NULL UNIQUE,
+             title TEXT, published TEXT, audio_url TEXT NOT NULL, audio_path TEXT, duration REAL,
+             status TEXT NOT NULL DEFAULT 'new', error TEXT, updated_at TEXT NOT NULL);
+           INSERT INTO feeds VALUES (1, 'u', NULL, 't');
+           INSERT INTO episodes (feed_id, guid, audio_url, updated_at) VALUES (1, 'g', 'a', 't');"""
+    )
+    c.commit()
+    c.close()
+    store = Store(db)
+    ep = store.episode("g")  # existing episodes keep their public guid
+    assert (ep.revision, ep.merged_at, ep.source_guid) == (0, None, "g")
+    assert store.add_episode(1, "g", "T", None, "a") is False  # not duplicated on the next sync
+    assert store.add_episode(1, "new", "N", None, "b") is True
+    assert store.episode(public_guid("u", "new")).source_guid == "new"
+
+
+# ---- feed refresh ----------------------------------------------------------
+
+
+def test_resync_refreshes_changed_metadata_but_keeps_state(tmp_path, monkeypatch):
+    store = Store(tmp_path / "t.db")
+    fid = store.add_feed("http://f").id
+    monkeypatch.setattr("ripperr.store._now", lambda: "2030-01-01T00:00:00+00:00")
+    assert store.add_episode(fid, "g", "Old", "2025-01-01T00:00:00+00:00", "http://expired") is True
+    store.set_status(1, "error", error="boom", audio_path="/x")
+
+    monkeypatch.setattr("ripperr.store._now", lambda: "2030-06-01T00:00:00+00:00")
+    assert store.add_episode(fid, "g", "Old", "2025-01-01T00:00:00+00:00", "http://expired") is False
+    assert store.episode_by_id(1).updated_at == "2030-01-01T00:00:00+00:00"  # nothing changed
+
+    monkeypatch.setattr("ripperr.store._now", lambda: "2030-09-01T00:00:00+00:00")
+    assert store.add_episode(fid, "g", "New", "2025-02-02T00:00:00+00:00", "http://fixed") is False
+    ep = store.episode_by_id(1)
+    assert (ep.title, ep.published, ep.audio_url) == ("New", "2025-02-02T00:00:00+00:00", "http://fixed")
+    assert (ep.status, ep.error, ep.audio_path, ep.revision) == ("error", "boom", "/x", 0)
+    assert ep.updated_at == "2030-09-01T00:00:00+00:00"
+    assert store.pending(retry_errors=True)[0].audio_url == "http://fixed"  # the retry uses it
+
+    store.add_episode(fid, "g", "New", None, "http://fixed")  # feed dropped the date
+    assert store.episode_by_id(1).published == "2025-02-02T00:00:00+00:00"
+
+
+# ---- cache durability ------------------------------------------------------
+
+
+def test_truncated_caches_are_misses_and_get_rewritten(tmp_path, monkeypatch):
+    rip, guid = make(tmp_path)
+    cfg, ep = rip.cfg, rip.episode(guid)
+    cfg.raw_path(guid, "asr").write_text('{"segments": [{"wor')  # cut off mid-write
+    cfg.raw_path(guid, "diar").write_text("[{")
+    monkeypatch.setattr(pipeline.asr, "transcribe", lambda *a, **k: {"segments": []})
+    proc = Processor(cfg, lambda _: None)
+    proc._diarizer = type("D", (), {"run": lambda self, wav: [{"start": 0, "end": 1, "speaker": "S"}]})()
+
+    assert proc._ensure_asr(ep, Path("x.wav"), force=False) == {"segments": []}
+    assert proc._ensure_diarization(ep, Path("x.wav"), force=False) == [{"start": 0, "end": 1, "speaker": "S"}]
+    assert _read_cache(cfg.raw_path(guid, "asr")) == {"segments": []}
+    assert _read_cache(cfg.raw_path(guid, "diar")) is not None
+
+
+def test_remerge_with_unreadable_cache_says_so(tmp_path):
+    rip, guid = make(tmp_path)
+    rip.cfg.raw_path(guid, "diar").write_text("[")
+    with pytest.raises(FileNotFoundError, match="usable cached"):
+        rip.remerge(guid)
+
+
+def test_cache_write_failure_keeps_old_file_and_leaves_no_temp(tmp_path, monkeypatch):
+    path = tmp_path / "c.json"
+    _write_cache(path, {"a": 1})
+    assert _read_cache(path) == {"a": 1}
+
+    with pytest.raises(TypeError):  # not serialisable
+        _write_cache(path, {"a": object()})
+
+    def boom(*a):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(pipeline.os, "replace", boom)
+    with pytest.raises(OSError):
+        _write_cache(path, {"a": 2})
+    assert _read_cache(path) == {"a": 1}
+    assert [p.name for p in tmp_path.iterdir()] == ["c.json"]
+
+
+# ---- completion is one transaction ----------------------------------------
+
+
+def test_replace_turns_marks_done_and_clears_error_in_one_step(tmp_path):
+    store = Store(tmp_path / "t.db")
+    store.add_episode(store.add_feed("http://f").id, "g", "T", None, "http://a")
+    store.set_status(1, "error", error="boom")
+    store.replace_turns(1, [Turn(0, "A", 0, 1, "hello")])
+    ep = store.episode_by_id(1)
+    assert (ep.status, ep.error, ep.revision) == ("done", None, 1)
+
+
+def test_failed_transcript_swap_rolls_back_everything(tmp_path):
+    store = Store(tmp_path / "t.db")
+    store.add_episode(store.add_feed("http://f").id, "g", "T", None, "http://a")
+    store.replace_turns(1, [Turn(0, "A", 0, 1, "old text")])
+    store.set_status(1, "downloaded")
+    before = store.episode_by_id(1)
+
+    with pytest.raises(sqlite3.IntegrityError):  # second turn has no text
+        store.replace_turns(1, [Turn(0, "A", 0, 1, "new text"), Turn(1, "A", 1, 2, None)])
+
+    assert store.episode_by_id(1) == before  # revision, status, timestamps untouched
+    assert [t.text for t in store.turns(1)] == ["old text"]
+    assert store.search("old") and not store.search("new")
+
+
+def test_cleanup_failure_after_commit_does_not_mark_episode_failed(tmp_path, monkeypatch):
+    rip, guid = make(tmp_path)
+    rip.cfg.keep_audio = False
+    monkeypatch.setattr(Processor, "_ensure_audio", lambda self, store, ep: Path("x.wav"))
+
+    def boom(self, *a):
+        raise PermissionError("nope")
+
+    monkeypatch.setattr(Processor, "_delete_audio", boom)
+    Processor(rip.cfg, lambda _: None).process(rip.store, rip.episode(guid))
+    ep = rip.episode(guid)
+    assert (ep.status, ep.error, ep.revision) == ("done", None, 1)
+
+
+def test_failure_before_commit_marks_error_and_stores_no_transcript(tmp_path, monkeypatch):
+    rip, guid = make(tmp_path)
+    monkeypatch.setattr(Processor, "_ensure_audio", lambda self, store, ep: Path("x.wav"))
+
+    def boom(self, *a):
+        raise RuntimeError("model exploded")
+
+    monkeypatch.setattr(Processor, "_ensure_asr", boom)
+    Processor(rip.cfg, lambda _: None).process(rip.store, rip.episode(guid))
+    ep = rip.episode(guid)
+    assert ep.status == "error" and "model exploded" in ep.error
+    assert rip.transcript(guid).turns == []
+
+
+# ---- packaging -------------------------------------------------------------
+
+
+def test_senko_is_pinned_to_a_commit():
+    pyproject = Path(__file__).parent.parent / "pyproject.toml"
+    deps = tomllib.loads(pyproject.read_text())["project"]["optional-dependencies"]["apple"]
+    senko = next(d for d in deps if d.startswith("senko"))
+    assert re.search(r"git\+https://\S+@[0-9a-f]{40}$", senko), senko

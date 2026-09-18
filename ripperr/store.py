@@ -9,6 +9,7 @@ so another backend only has to provide these same methods.
 
 from __future__ import annotations
 
+import hashlib
 import sqlite3
 from contextlib import contextmanager
 from datetime import datetime, timezone
@@ -32,6 +33,7 @@ CREATE TABLE IF NOT EXISTS episodes (
     id          INTEGER PRIMARY KEY,
     feed_id     INTEGER NOT NULL REFERENCES feeds(id) ON DELETE CASCADE,
     guid        TEXT NOT NULL UNIQUE,
+    source_guid TEXT NOT NULL,
     title       TEXT,
     published   TEXT,
     audio_url   TEXT NOT NULL,
@@ -81,6 +83,12 @@ STATUS_DONE = "done"
 STATUS_ERROR = "error"
 
 
+def public_guid(feed_url: str, source_guid: str) -> str:
+    """Globally stable episode key. A feed's own guids are only unique within that
+    feed (two feeds can both use "1"), so scope them by the feed's URL."""
+    return hashlib.sha1(f"{feed_url}\0{source_guid}".encode()).hexdigest()[:20]
+
+
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
@@ -113,9 +121,21 @@ class Store:
     def _migrate(self) -> None:
         """Bring a database created by an older version up to date."""
         cols = {r["name"] for r in self.conn.execute("PRAGMA table_info(episodes)")}
-        for name, ddl in (("revision", "INTEGER NOT NULL DEFAULT 0"), ("merged_at", "TEXT")):
+        for name, ddl in (
+            ("revision", "INTEGER NOT NULL DEFAULT 0"),
+            ("merged_at", "TEXT"),
+            ("source_guid", "TEXT"),
+        ):
             if name not in cols:
                 self.conn.execute(f"ALTER TABLE episodes ADD COLUMN {name} {ddl}")
+        # Before source_guid existed, `guid` was the feed's own id. Keep it as the
+        # public guid so existing caches and consumers keep working; only episodes
+        # added from now on get a derived one.
+        self.conn.execute("UPDATE episodes SET source_guid = guid WHERE source_guid IS NULL")
+        self.conn.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_episodes_feed_source "
+            "ON episodes(feed_id, source_guid)"
+        )
         for row in self.conn.execute(
             "SELECT id, published FROM episodes WHERE published IS NOT NULL"
         ).fetchall():
@@ -154,20 +174,44 @@ class Store:
     def add_episode(
         self,
         feed_id: int,
-        guid: str,
+        source_guid: str,
         title: str | None,
         published: str | None,
         audio_url: str,
     ) -> bool:
-        """Returns True if this episode was new to us."""
+        """Record an episode from a feed. Returns True if it was new.
+
+        A known episode (same feed and source guid) is refreshed instead: title,
+        date and audio URL are updated when the feed now says something different,
+        so a corrected or re-hosted enclosure reaches the next retry. A value the
+        feed no longer provides never erases the stored one.
+        """
         with self.tx() as c:
-            cur = c.execute(
-                """INSERT OR IGNORE INTO episodes
-                   (feed_id, guid, title, published, audio_url, status, updated_at)
-                   VALUES (?, ?, ?, ?, ?, ?, ?)""",
-                (feed_id, guid, title, published, audio_url, STATUS_NEW, _now()),
-            )
-            return cur.rowcount > 0
+            row = c.execute(
+                "SELECT id, title, published, audio_url FROM episodes "
+                "WHERE feed_id = ? AND source_guid = ?",
+                (feed_id, source_guid),
+            ).fetchone()
+            if row is None:
+                feed_url = c.execute("SELECT url FROM feeds WHERE id = ?", (feed_id,)).fetchone()["url"]
+                c.execute(
+                    """INSERT INTO episodes
+                       (feed_id, guid, source_guid, title, published, audio_url, status, updated_at)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                    (feed_id, public_guid(feed_url, source_guid), source_guid, title,
+                     published, audio_url, STATUS_NEW, _now()),
+                )
+                return True
+
+            new = {"title": title, "published": published, "audio_url": audio_url}
+            changed = {k: v for k, v in new.items() if v is not None and v != row[k]}
+            if changed:
+                sets = ", ".join(f"{k} = ?" for k in changed)
+                c.execute(
+                    f"UPDATE episodes SET {sets}, updated_at = ? WHERE id = ?",
+                    [*changed.values(), _now(), row["id"]],
+                )
+            return False
 
     def pending(self, limit: int | None = None, retry_errors: bool = False) -> list[Episode]:
         sql = (
@@ -232,12 +276,15 @@ class Store:
         turns: Sequence[Turn],
         corrections: Sequence[Correction] = (),
     ) -> None:
-        """Swap in a new transcript and bump the episode's revision."""
+        """Swap in a new transcript, bump the episode's revision and mark it done,
+        all in one transaction: a reader never sees a transcript on an episode that
+        isn't done, and a failure part-way leaves everything as it was."""
         with self.tx() as c:
             now = _now()
             c.execute(
-                "UPDATE episodes SET revision = revision + 1, merged_at = ?, updated_at = ? WHERE id = ?",
-                (now, now, episode_id),
+                "UPDATE episodes SET revision = revision + 1, merged_at = ?, updated_at = ?, "
+                "status = ?, error = NULL WHERE id = ?",
+                (now, now, STATUS_DONE, episode_id),
             )
             c.execute("DELETE FROM corrections WHERE episode_id = ?", (episode_id,))
             c.executemany(

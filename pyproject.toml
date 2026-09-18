@@ -19,8 +19,10 @@ youtube = [
 ]
 apple = [
     "mlx-whisper>=0.4",
-    # Senko isn't on a stable PyPI release cadence; install from git:
-    #   uv pip install "git+https://github.com/narcotic-sh/senko.git"
+    # Senko has no PyPI release and its output shape has changed between versions
+    # (see diarize.normalize_segments), so pin the commit that was tested. To
+    # upgrade: bump the SHA, run a real episode, then run the tests.
+    "senko @ git+https://github.com/narcotic-sh/senko.git@1bcb09041bfa170b4a5a4b0af92f66eff76204d5",
 ]
 
 [project.scripts]
@@ -29,6 +31,9 @@ ripperr = "ripperr.cli:main"
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
+
+[tool.hatch.metadata]
+allow-direct-references = true  # for the pinned Senko commit
 
 [tool.hatch.build.targets.wheel]
 packages = ["ripperr"]

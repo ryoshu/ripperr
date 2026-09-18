@@ -19,7 +19,8 @@ class Feed:
 @dataclass(frozen=True)
 class Episode:
     id: int  # local to this instance; use `guid` to refer to an episode elsewhere
-    guid: str  # the stable external key
+    guid: str  # the stable public key, derived from the feed and its own id for the episode
+    source_guid: str  # the feed's own id for the episode; only unique within that feed
     feed_id: int
     title: str | None
     published: str | None

@@ -21,12 +21,16 @@ with Ripperr(Config(root=path), log=print) as rip:
 
 | Term | Meaning |
 | --- | --- |
-| `Episode.guid` | The stable external key. Use it to refer to an episode from another system. RSS episodes use the feed's guid (or a hash of the audio URL if the feed has none); YouTube episodes use `yt:<video id>`. |
+| `Episode.guid` | The stable public key. Use it to refer to an episode from another system. It is opaque: derived from the feed's URL and the feed's own id for the episode, and unique across all feeds. |
+| `Episode.source_guid` | The feed's own id for the episode (the RSS guid, or a hash of the audio URL if the feed has none; `yt:<video id>` for YouTube). Only unique within one feed. |
 | `Episode.id` | A local integer. It is meaningful only within one database. Methods that take a `ref` accept a guid (`str`) or a local id (`int`). |
 | Turn key | `(guid, idx)`. `idx` is 0-based and contiguous within one revision. |
 
-`guid` is unique across **all** feeds. If two feeds use the same guid, the second
-episode is silently ignored.
+Two feeds that use the same `source_guid` (RSS guids are often short, like `1`) get
+two episodes with different public `guid`s. The public guid is fixed when the
+episode is first recorded, so it does not change if the feed's URL later does.
+Databases created before `source_guid` existed keep their old `guid` values, which
+were the feed's own ids.
 
 ## Methods
 
@@ -36,9 +40,9 @@ episode is silently ignored.
 | --- | --- |
 | `add_feed(url) -> Feed` | Idempotent: adding a known URL returns the existing feed. The URL may be an RSS feed or a YouTube playlist. |
 | `feeds() -> list[Feed]` | In id order. |
-| `sync() -> int` | Polls every feed and records episodes not yet seen. Returns the number of new episodes. A feed that fails to load is logged and skipped; `sync` does not raise for it. |
+| `sync() -> int` | Polls every feed, records episodes not yet seen and returns how many were new. For episodes already known it refreshes `title`, `published` and `audio_url` when the feed now gives a different value, so a corrected or re-hosted enclosure reaches the next retry; a value the feed no longer provides never erases the stored one. Status, audio, transcript and `revision` are untouched. A feed that fails to load is logged and skipped; `sync` does not raise for it. |
 | `process(limit=None, *, glossary=None, retry_errors=False, force=False) -> list[Episode]` | Downloads, transcribes, diarizes and merges pending episodes, then returns them as they now stand. See "Processing". |
-| `remerge(ref, *, glossary=None) -> Episode` | Redoes the glossary and merge steps from cached model output and returns the episode. Raises `LookupError` for an unknown episode and `FileNotFoundError` if it has no cached model output. |
+| `remerge(ref, *, glossary=None) -> Episode` | Redoes the glossary and merge steps from cached model output and returns the episode. Raises `LookupError` for an unknown episode and `FileNotFoundError` if it has no usable cached model output (missing, or unreadable). |
 
 ### Read
 
@@ -70,8 +74,15 @@ new ──▶ downloaded ──▶ done
 
 `Episode.revision` starts at 0 and increases by one every time the transcript is
 rewritten: after `process` finishes an episode, and after every `remerge`. Status
-changes, such as `new` to `downloaded`, do not change it. `merged_at` is the time
-of the last rewrite.
+changes, such as `new` to `downloaded`, and metadata refreshes from `sync` do not
+change it. `merged_at` is the time of the last rewrite. `updated_at` moves on any
+change, including a metadata refresh, so a title fix shows up in
+`episodes(updated_since=...)` with the same `revision`.
+
+Writing a transcript, bumping the revision, storing the corrections and marking the
+episode `done` (clearing `error`) happen in one transaction. A reader never sees a
+new transcript on an episode that is not `done`, and a failure part-way leaves the
+previous transcript, revision and status in place.
 
 A poller should:
 
@@ -96,8 +107,17 @@ positions across revisions.
   ML dependency: without the `apple` extra every episode ends up `error`.
 - `glossary`: a list of terms. `None` reads the glossary file (`glossary.txt` under
   the data directory, or `RIPPERR_GLOSSARY`); `[]` turns the glossary off.
+- Only the work up to that transaction can mark an episode `error`. Once the
+  transcript is stored, a failure while deleting audio (`keep_audio` off) is logged
+  and the episode stays `done`.
 - Model output is cached, so re-processing after a merge change, a glossary change
   or a crash skips the expensive steps. `force=True` ignores the cache.
+- Cache files are written to a temporary file and renamed into place, so an
+  interruption never leaves a partial file (a killed run can leave a stray `*.tmp`
+  in `raw/`, which is safe to delete). A cache that can't be read is treated as
+  missing and redone, not as an error.
+- The cache is keyed by episode only. Changing `RIPPERR_ASR_MODEL` or the language
+  does not invalidate it; use `force=True` to redo the models.
 - Processing needs Apple Silicon. Reading does not (see below).
 
 ## Glossary corrections
