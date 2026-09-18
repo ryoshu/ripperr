@@ -12,6 +12,7 @@ from __future__ import annotations
 import sqlite3
 from contextlib import contextmanager
 from datetime import datetime, timezone
+from email.utils import parsedate_to_datetime
 from pathlib import Path
 from typing import Iterator, Sequence
 
@@ -84,6 +85,21 @@ def _now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
 
+def _published_iso(value: str) -> str | None:
+    """Normalize dates stored by versions that kept the feed's raw text."""
+    iso = value[:-1] + "+00:00" if value.endswith("Z") else value
+    try:
+        parsed = datetime.fromisoformat(iso)
+    except ValueError:
+        try:
+            parsed = parsedate_to_datetime(value)
+        except (TypeError, ValueError):
+            return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc).isoformat()
+
+
 class Store:
     def __init__(self, path: Path):
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -100,6 +116,14 @@ class Store:
         for name, ddl in (("revision", "INTEGER NOT NULL DEFAULT 0"), ("merged_at", "TEXT")):
             if name not in cols:
                 self.conn.execute(f"ALTER TABLE episodes ADD COLUMN {name} {ddl}")
+        for row in self.conn.execute(
+            "SELECT id, published FROM episodes WHERE published IS NOT NULL"
+        ).fetchall():
+            published = _published_iso(row["published"])
+            if published != row["published"]:
+                self.conn.execute(
+                    "UPDATE episodes SET published = ? WHERE id = ?", (published, row["id"])
+                )
 
     def close(self) -> None:
         self.conn.close()

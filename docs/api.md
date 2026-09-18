@@ -59,8 +59,9 @@ new ──▶ downloaded ──▶ done
 
 - An episode whose audio is already on disk can go from `new` straight to `done`.
 - `process` picks up `new` and `downloaded` episodes, plus `error` ones when
-  `retry_errors=True`. `done` episodes are never picked up again; use `force` or
-  `remerge` for those.
+  `retry_errors=True`. `done` episodes are never picked up again; use `remerge`
+  to rewrite their transcripts from cached model output. `force` only makes a
+  selected pending or retried episode rerun the models instead of using its cache.
 - On failure an episode becomes `error` and `Episode.error` holds a traceback.
   Success sets it back to `None`.
 - `remerge` sets the episode to `done`, including one that was in `error`.

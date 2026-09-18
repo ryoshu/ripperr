@@ -83,12 +83,17 @@ def test_old_database_is_migrated(tmp_path):
              title TEXT, published TEXT, audio_url TEXT NOT NULL, audio_path TEXT, duration REAL,
              status TEXT NOT NULL DEFAULT 'new', error TEXT, updated_at TEXT NOT NULL);
            INSERT INTO feeds VALUES (1, 'u', NULL, 't');
-           INSERT INTO episodes (feed_id, guid, audio_url, updated_at) VALUES (1, 'g', 'a', 't');"""
+           INSERT INTO episodes (feed_id, guid, published, audio_url, updated_at)
+             VALUES (1, 'g', 'Wed, 01 Jan 2025 08:00:00 GMT', 'a', 't');"""
     )
     c.commit()
     c.close()
-    ep = Store(db).episode("g")
-    assert (ep.revision, ep.merged_at) == (0, None)
+    store = Store(db)
+    ep = store.episode("g")
+    assert (ep.revision, ep.merged_at, ep.published) == (
+        0, None, "2025-01-01T08:00:00+00:00")
+    store.add_episode(1, "newer", None, "2025-01-06T08:00:00+00:00", "b")
+    assert [ep.guid for ep in store.pending()] == ["newer", "g"]
 
 
 def test_rss_published_is_iso_so_pending_is_newest_first(tmp_path):
