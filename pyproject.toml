@@ -1,0 +1,29 @@
+[project]
+name = "podpipe"
+version = "0.1.0"
+description = "Apple Silicon native podcast download, transcription and diarization"
+requires-python = ">=3.11"
+
+dependencies = [
+    "feedparser>=6.0",
+    "requests>=2.31",
+    # mlx-whisper is macOS/Apple Silicon only; kept optional so the package can
+    # at least be imported elsewhere for testing the merge logic.
+]
+
+[project.optional-dependencies]
+apple = [
+    "mlx-whisper>=0.4",
+    # Senko isn't on a stable PyPI release cadence; install from git:
+    #   uv pip install "git+https://github.com/narcotic-sh/senko.git"
+]
+
+[project.scripts]
+podpipe = "podpipe.cli:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["podpipe"]
