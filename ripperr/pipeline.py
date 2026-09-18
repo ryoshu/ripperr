@@ -11,7 +11,7 @@ import traceback
 from pathlib import Path
 from typing import Any, Callable
 
-from . import asr, audio, diarize, feeds, glossary, merge, youtube
+from . import asr, audio, diarize, feeds, glossary, merge
 from .config import Config
 from .models import Correction, Episode, Turn
 from .store import STATUS_DONE, STATUS_DOWNLOADED, STATUS_ERROR, Store
@@ -130,22 +130,9 @@ class Processor:
         cached = self.cfg.raw_path(episode.guid, "asr")
         if cached.exists() and not force:
             return json.loads(cached.read_text())
-        result = self._youtube_captions(episode, wav)
-        if result is None:
-            self.log("  transcribing…")
-            result = asr.transcribe(wav, self.cfg.asr_model, self.cfg.language)
+        self.log("  transcribing…")
+        result = asr.transcribe(wav, self.cfg.asr_model, self.cfg.language)
         cached.write_text(json.dumps(result))
-        return result
-
-    def _youtube_captions(self, episode: Episode, wav: Path) -> dict[str, Any] | None:
-        """YouTube auto-captions in place of Whisper, when present and dense enough."""
-        if not (self.cfg.use_captions and youtube.is_youtube(episode.audio_url)):
-            return None
-        result = youtube.fetch_captions(episode.audio_url)
-        if not youtube.captions_reliable(result, audio.duration_seconds(wav)):
-            self.log("  no reliable youtube captions, falling back to whisper")
-            return None
-        self.log("  using youtube captions")
         return result
 
     def _ensure_diarization(self, episode: Episode, wav: Path, force: bool) -> list[dict[str, Any]]:

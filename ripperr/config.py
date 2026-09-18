@@ -38,11 +38,6 @@ class Config:
     # Phonetic similarity (0-1) needed to respell a heard name as a glossary term.
     glossary_match: float = 0.95
 
-    # Opt in to YouTube auto-captions instead of Whisper. Off by default: on a
-    # fantasy-football episode they agreed with Whisper on ~95% of tokens but
-    # mangled player names (Bijan -> "Bejian"), which is what you search for.
-    use_captions: bool = field(default_factory=lambda: os.environ.get("RIPPERR_YT_CAPTIONS", "0") == "1")
-
     keep_audio: bool = field(default_factory=lambda: os.environ.get("RIPPERR_KEEP_AUDIO", "1") != "0")
 
     @property

@@ -1,15 +1,16 @@
 # ripperr
 
-Subscribe to podcast feeds, transcribe and diarize them locally on Apple Silicon,
-store everything in SQLite. No UI, no cloud, no CUDA.
+Subscribe to podcast feeds (RSS or YouTube playlists), transcribe and diarize them
+locally on Apple Silicon, store everything in SQLite. No UI, no cloud, no CUDA.
+Meant to be used from Python (`ripperr.api.Ripperr`) as well as from the CLI.
 
 ```
-RSS feed ──▶ download ──▶ ffmpeg 16k mono ──┬──▶ mlx-whisper (Metal) ──▶ words
-                                            └──▶ Senko (CoreML)     ──▶ speaker segments
-                                                                          │
-                                       merge by temporal overlap ◀────────┘
-                                                    │
-                                              SQLite + FTS5
+RSS / YouTube ──▶ download ──▶ ffmpeg 16k mono ──┬──▶ mlx-whisper (Metal) ──▶ words
+                                                 └──▶ Senko (CoreML)     ──▶ speaker segments
+                                                                               │
+                        glossary respelling ──▶ merge by temporal overlap ◀────┘
+                                                         │
+                                                   SQLite + FTS5
 ```
 
 ## Why these pieces
@@ -45,17 +46,25 @@ ripperr search "interest rates"
 ripperr status
 ```
 
-Set `RIPPERR_ROOT` to move the database and audio elsewhere (defaults to
-`~/ripperr`). `RIPPERR_ASR_MODEL` swaps the Whisper model;
-`RIPPERR_KEEP_AUDIO=0` deletes audio after processing.
+Settings come from the environment:
+
+| Variable | Effect |
+| --- | --- |
+| `RIPPERR_ROOT` | where the database, audio and cache live (default `~/ripperr`) |
+| `RIPPERR_ASR_MODEL` | Whisper model (default `mlx-community/whisper-large-v3-turbo`) |
+| `RIPPERR_LANGUAGE` | force a language instead of auto-detecting |
+| `RIPPERR_KEEP_AUDIO=0` | delete audio after processing |
+| `RIPPERR_GLOSSARY` | glossary file (default `<root>/glossary.txt`) |
+
+Run the tests with `uv pip install pytest && python -m pytest tests`.
 
 ### YouTube
 
 Playlist URLs work as feeds (`uv pip install -e ".[youtube]"` for yt-dlp and its
 deno JS runtime). Audio is fetched with yt-dlp and transcribed like any other
-episode. `RIPPERR_YT_CAPTIONS=1` uses YouTube's auto-captions instead of Whisper
-to skip the transcription pass; they have word timing but no speakers, so
-diarization still runs, and they garble proper nouns more than Whisper does.
+episode. YouTube's own auto-captions are deliberately not used: they have no
+speakers and garble proper nouns more than Whisper does. Playlist entries that
+are private or deleted are skipped.
 
 ### Glossary
 
@@ -95,14 +104,18 @@ whenever a transcript is rewritten, so a consumer knows when to re-read it.
 `episodes(updated_since=...)` is inclusive, so a poller should expect repeats and
 compare revisions. The CLI is a client of this same class.
 
+Reading (`episodes`, `transcript`, `search`) needs only the base dependencies;
+processing needs the `apple` extra and Apple Silicon.
+
 ## Layout
 
 | Module | Role |
 | --- | --- |
 | `api.py` | the public `Ripperr` class; CLI and other callers use only this |
 | `models.py` | plain dataclasses returned by the API |
+| `config.py` | paths, model choices and thresholds, overridable from the environment |
 | `feeds.py` | RSS parsing, enclosure download |
-| `youtube.py` | YouTube playlists, audio via yt-dlp, optional captions |
+| `youtube.py` | YouTube playlists, audio via yt-dlp |
 | `glossary.py` | phonetic respelling of names from a supplied term list |
 | `audio.py` | ffmpeg normalization to 16 kHz mono WAV |
 | `asr.py` | mlx-whisper, word-level timestamps |
@@ -129,9 +142,10 @@ routinely, because a single Whisper segment often spans a speaker change.
 ## Caching and re-running
 
 ASR and diarization output are written to `raw/<hash of guid>.{asr,diar}.json`
-before merging. `ripperr remerge <id>` redoes only the merge from that cache, so
-you can tune `max_turn_gap` or the orphan-word logic across a whole archive in
-seconds. `ripperr run --force` ignores the cache and re-runs the models.
+before merging. `ripperr remerge <id>` redoes only the glossary and merge steps
+from that cache, so you can tune `max_turn_gap`, the orphan-word logic or the
+glossary across a whole archive in seconds. `ripperr run --force` ignores the
+cache and re-runs the models.
 
 ## Known rough edges
 
