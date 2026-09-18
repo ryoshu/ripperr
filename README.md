@@ -27,8 +27,7 @@ Both run on the same normalized 16 kHz mono WAV, so the conversion happens once.
 ```bash
 brew install ffmpeg
 uv venv --python 3.13 && source .venv/bin/activate
-uv pip install -e .
-uv pip install mlx-whisper
+uv pip install -e ".[apple]"    # includes mlx-whisper
 uv pip install "git+https://github.com/narcotic-sh/senko.git"
 ```
 

@@ -121,11 +121,11 @@ class Store:
             )
             return cur.rowcount > 0
 
-    def pending(self, limit: int | None = None) -> list[sqlite3.Row]:
+    def pending(self, limit: int | None = None, retry_errors: bool = False) -> list[sqlite3.Row]:
         sql = (
-            "SELECT * FROM episodes WHERE status IN (?, ?) ORDER BY published DESC, id DESC"
+            "SELECT * FROM episodes WHERE status IN (?, ?, ?) ORDER BY published DESC, id DESC"
         )
-        params: list[object] = [STATUS_NEW, STATUS_DOWNLOADED]
+        params: list[object] = [STATUS_NEW, STATUS_DOWNLOADED, STATUS_ERROR if retry_errors else STATUS_NEW]
         if limit:
             sql += " LIMIT ?"
             params.append(limit)
@@ -190,6 +190,13 @@ class Store:
         ).fetchall()
 
     def search(self, query: str, limit: int = 20) -> list[sqlite3.Row]:
+        try:
+            return self._search(query, limit)
+        except sqlite3.OperationalError:
+            # Not valid FTS5 syntax (e.g. "don't", "a-b"): retry as a literal phrase.
+            return self._search('"' + query.replace('"', '""') + '"', limit)
+
+    def _search(self, query: str, limit: int) -> list[sqlite3.Row]:
         return self.conn.execute(
             """SELECT t.id, t.episode_id, t.speaker, t.start, t.end,
                       e.title AS episode_title,

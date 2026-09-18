@@ -49,7 +49,7 @@ def cmd_sync(args, store: Store) -> int:
 
 
 def cmd_run(args, store: Store) -> int:
-    pending = store.pending(limit=args.limit)
+    pending = store.pending(limit=args.limit, retry_errors=args.retry)
     if not pending:
         print("nothing pending")
         return 0
@@ -127,6 +127,7 @@ def build_parser() -> argparse.ArgumentParser:
     r = sub.add_parser("run", help="download, transcribe and diarize pending episodes")
     r.add_argument("--limit", type=int, default=None)
     r.add_argument("--force", action="store_true", help="ignore cached model output")
+    r.add_argument("--retry", action="store_true", help="also retry episodes that failed")
     r.set_defaults(func=cmd_run)
 
     st = sub.add_parser("status", help="episode counts by state")

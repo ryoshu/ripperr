@@ -23,14 +23,18 @@ class Config:
     # ASR. Turbo is the sane default on Apple Silicon: near-large-v3 quality at a
     # fraction of the runtime. Swap for mlx-community/whisper-large-v3-mlx if you
     # care more about accuracy than throughput.
-    asr_model: str = os.environ.get("PODPIPE_ASR_MODEL", "mlx-community/whisper-large-v3-turbo")
-    language: str | None = os.environ.get("PODPIPE_LANGUAGE") or None
+    asr_model: str = field(
+        default_factory=lambda: os.environ.get(
+            "PODPIPE_ASR_MODEL", "mlx-community/whisper-large-v3-turbo"
+        )
+    )
+    language: str | None = field(default_factory=lambda: os.environ.get("PODPIPE_LANGUAGE") or None)
 
     # Turn segmentation
     max_turn_gap: float = 2.0  # seconds of silence that forces a new turn
     orphan_word_gap: float = 0.5  # how far a word may reach for a neighbouring speaker
 
-    keep_audio: bool = os.environ.get("PODPIPE_KEEP_AUDIO", "1") != "0"
+    keep_audio: bool = field(default_factory=lambda: os.environ.get("PODPIPE_KEEP_AUDIO", "1") != "0")
 
     @property
     def db_path(self) -> Path:

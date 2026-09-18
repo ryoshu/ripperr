@@ -77,16 +77,27 @@ def _best_speaker(
 def _fill_orphans(words: list[dict[str, Any]], orphan_gap: float) -> None:
     """Words still unattributed take the previous speaker if it's adjacent enough,
     otherwise the next one. Modifies in place."""
+    # Next attributed word for each index, built in one backward pass. Filled words
+    # only ever become "prev" (tracked below), so this snapshot stays valid.
+    nexts: list[dict[str, Any] | None] = [None] * len(words)
+    following = None
+    for i in range(len(words) - 1, -1, -1):
+        nexts[i] = following
+        if words[i]["speaker"] != UNKNOWN:
+            following = words[i]
+
+    prev = None
     for i, w in enumerate(words):
         if w["speaker"] != UNKNOWN:
+            prev = w
             continue
-        prev = next((x for x in reversed(words[:i]) if x["speaker"] != UNKNOWN), None)
-        nxt = next((x for x in words[i + 1:] if x["speaker"] != UNKNOWN), None)
+        nxt = nexts[i]
         prev_gap = w["start"] - prev["end"] if prev else float("inf")
         next_gap = nxt["start"] - w["end"] if nxt else float("inf")
         if min(prev_gap, next_gap) > orphan_gap * 4:
             continue
         w["speaker"] = prev["speaker"] if prev_gap <= next_gap else nxt["speaker"]
+        prev = w
 
 
 def group_turns(
