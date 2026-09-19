@@ -34,7 +34,8 @@ def sync_feeds(store: Store, log: Log = print) -> int:
             store.add_feed(feed.url, title)
         new = sum(
             store.add_episode(
-                feed.id, ep["source_guid"], ep["title"], ep["published"], ep["audio_url"]
+                feed.id, ep["source_guid"], ep["title"], ep["published"], ep["audio_url"],
+                ep.get("source_url"),
             )
             # oldest first, so ids rise with recency even for feeds without dates
             for ep in reversed(episodes)

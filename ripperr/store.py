@@ -37,6 +37,7 @@ CREATE TABLE IF NOT EXISTS episodes (
     title       TEXT,
     published   TEXT,
     audio_url   TEXT NOT NULL,
+    source_url  TEXT,
     audio_path  TEXT,
     duration    REAL,
     status      TEXT NOT NULL DEFAULT 'new',
@@ -47,6 +48,16 @@ CREATE TABLE IF NOT EXISTS episodes (
 );
 
 CREATE INDEX IF NOT EXISTS idx_episodes_status ON episodes(status);
+
+CREATE TABLE IF NOT EXISTS changes (
+    seq          INTEGER PRIMARY KEY AUTOINCREMENT,
+    episode_guid TEXT NOT NULL,
+    revision     INTEGER NOT NULL,
+    kind         TEXT NOT NULL CHECK (kind IN ('transcript', 'metadata')),
+    occurred_at  TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_changes_seq ON changes(seq);
 
 CREATE TABLE IF NOT EXISTS turns (
     id          INTEGER PRIMARY KEY,
@@ -122,6 +133,7 @@ class Store:
         """Bring a database created by an older version up to date."""
         cols = {r["name"] for r in self.conn.execute("PRAGMA table_info(episodes)")}
         for name, ddl in (
+            ("source_url", "TEXT"),
             ("revision", "INTEGER NOT NULL DEFAULT 0"),
             ("merged_at", "TEXT"),
             ("source_guid", "TEXT"),
@@ -179,6 +191,12 @@ class Store:
     def feeds(self) -> list[Feed]:
         return [_feed(r) for r in self.conn.execute("SELECT * FROM feeds ORDER BY id")]
 
+    def feed(self, feed_id: int) -> Feed:
+        row = self.conn.execute("SELECT * FROM feeds WHERE id = ?", (feed_id,)).fetchone()
+        if row is None:
+            raise LookupError(f"no feed {feed_id}")
+        return _feed(row)
+
     # ---- episodes --------------------------------------------------------
 
     def add_episode(
@@ -188,6 +206,7 @@ class Store:
         title: str | None,
         published: str | None,
         audio_url: str,
+        source_url: str | None = None,
     ) -> bool:
         """Record an episode from a feed. Returns True if it was new.
 
@@ -198,7 +217,7 @@ class Store:
         """
         with self.tx() as c:
             row = c.execute(
-                "SELECT id, title, published, audio_url FROM episodes "
+                "SELECT id, title, published, audio_url, source_url, guid, revision FROM episodes "
                 "WHERE feed_id = ? AND source_guid = ?",
                 (feed_id, source_guid),
             ).fetchone()
@@ -206,14 +225,21 @@ class Store:
                 feed_url = c.execute("SELECT url FROM feeds WHERE id = ?", (feed_id,)).fetchone()["url"]
                 c.execute(
                     """INSERT INTO episodes
-                       (feed_id, guid, source_guid, title, published, audio_url, status, updated_at)
-                       VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                       (feed_id, guid, source_guid, title, published, audio_url, source_url,
+                        status, updated_at)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                     (feed_id, public_guid(feed_url, source_guid), source_guid, title,
-                     published, audio_url, STATUS_NEW, _now()),
+                     published, audio_url, source_url, STATUS_NEW, _now()),
                 )
+                self._insert_change(c, public_guid(feed_url, source_guid), 0, "metadata")
                 return True
 
-            new = {"title": title, "published": published, "audio_url": audio_url}
+            new = {
+                "title": title,
+                "published": published,
+                "audio_url": audio_url,
+                "source_url": source_url,
+            }
             changed = {k: v for k, v in new.items() if v is not None and v != row[k]}
             if changed:
                 sets = ", ".join(f"{k} = ?" for k in changed)
@@ -221,6 +247,7 @@ class Store:
                     f"UPDATE episodes SET {sets}, updated_at = ? WHERE id = ?",
                     [*changed.values(), _now(), row["id"]],
                 )
+                self._insert_change(c, row["guid"], row["revision"], "metadata")
             return False
 
     def pending(self, limit: int | None = None, retry_errors: bool = False) -> list[Episode]:
@@ -304,6 +331,11 @@ class Store:
                 "status = ?, error = NULL WHERE id = ?",
                 (now, now, STATUS_DONE, episode_id),
             )
+            episode = c.execute(
+                "SELECT guid, revision FROM episodes WHERE id = ?", (episode_id,)
+            ).fetchone()
+            if episode is None:
+                raise LookupError(f"no episode {episode_id}")
             c.execute("DELETE FROM corrections WHERE episode_id = ?", (episode_id,))
             c.executemany(
                 "INSERT INTO corrections (episode_id, heard, fixed, count) VALUES (?, ?, ?, ?)",
@@ -331,6 +363,37 @@ class Store:
                     "INSERT INTO turns_fts (text, turn_id, episode_id) VALUES (?, ?, ?)",
                     (t.text, cur.lastrowid, episode_id),
                 )
+            self._insert_change(c, episode["guid"], episode["revision"], "transcript")
+
+    @staticmethod
+    def _insert_change(c: sqlite3.Connection, guid: str, revision: int, kind: str) -> None:
+        c.execute(
+            "INSERT INTO changes (episode_guid, revision, kind, occurred_at) VALUES (?, ?, ?, ?)",
+            (guid, revision, kind, _now()),
+        )
+
+    def highest_change_seq(self) -> int:
+        row = self.conn.execute("SELECT COALESCE(MAX(seq), 0) AS seq FROM changes").fetchone()
+        return int(row["seq"])
+
+    def changes(self, after: int = 0, limit: int = 100) -> list[dict]:
+        rows = self.conn.execute(
+            """SELECT seq, episode_guid, revision, kind, occurred_at
+               FROM changes WHERE seq > ? ORDER BY seq LIMIT ?""",
+            (after, limit),
+        )
+        return [dict(r) for r in rows]
+
+    def emit_current(self) -> int:
+        """Queue the current revision of every completed episode for bootstrap."""
+        with self.tx() as c:
+            rows = c.execute(
+                "SELECT guid, revision FROM episodes WHERE status = ? ORDER BY id",
+                (STATUS_DONE,),
+            ).fetchall()
+            for row in rows:
+                self._insert_change(c, row["guid"], row["revision"], "transcript")
+            return len(rows)
 
     def turns(self, episode_id: int) -> list[Turn]:
         rows = self.conn.execute(

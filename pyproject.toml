@@ -13,6 +13,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+server = []
 youtube = [
     "yt-dlp[default]",  # [default] pulls yt-dlp-ejs, the YouTube JS challenge solver
     "deno",  # JS runtime yt-dlp needs for YouTube; PyPI redistribution of the Deno binary

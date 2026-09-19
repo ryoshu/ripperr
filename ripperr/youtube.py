@@ -32,6 +32,7 @@ def parse_playlist(url: str) -> tuple[str | None, list[dict]]:
             "title": e["title"],
             "published": None,
             "audio_url": e["url"],
+            "source_url": f"https://www.youtube.com/watch?v={e['id']}",
         }
         for e in info.get("entries") or []
         if e.get("title") not in _SKIP_TITLES

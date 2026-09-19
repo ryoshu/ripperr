@@ -25,6 +25,7 @@ class Episode:
     title: str | None
     published: str | None
     audio_url: str
+    source_url: str | None  # public RSS entry or YouTube watch URL
     audio_path: str | None  # None until downloaded, and again once the file is deleted
     duration: float | None
     status: str  # new | downloaded | done | error

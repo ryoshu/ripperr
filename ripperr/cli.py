@@ -104,6 +104,13 @@ def cmd_remerge(args, rip: Ripperr) -> int:
     return 0
 
 
+def cmd_serve(args, rip: Ripperr) -> int:
+    from .server import serve
+
+    serve(rip.cfg.db_path, args.host, args.port, args.token, args.emit_current)
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="ripperr", description=__doc__)
     sub = p.add_subparsers(dest="command", required=True)
@@ -140,6 +147,14 @@ def build_parser() -> argparse.ArgumentParser:
     rm = sub.add_parser("remerge", help="redo speaker merge from cached model output")
     rm.add_argument("episode", help="episode id or guid")
     rm.set_defaults(func=cmd_remerge)
+
+    sv = sub.add_parser("serve", help="serve the transcript change feed over HTTP")
+    sv.add_argument("--host", default="127.0.0.1")
+    sv.add_argument("--port", type=int, default=8765)
+    sv.add_argument("--token", help="bearer token required for non-loopback binds")
+    sv.add_argument("--emit-current", action="store_true",
+                    help="enqueue current completed episodes for bootstrap")
+    sv.set_defaults(func=cmd_serve)
 
     return p
 

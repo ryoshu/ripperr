@@ -137,6 +137,7 @@ the turns. Matching rules and limits are in the README.
 - Timestamps (`updated_at`, `merged_at`): ISO 8601 UTC with second resolution, for
   example `2026-09-18T21:17:16+00:00`.
 - `Episode.published`: ISO 8601 UTC, or `None` if the feed gave no date.
+- `Episode.source_url`: public RSS entry or YouTube watch URL for attribution; never a local path.
 - Speakers: labels like `SPEAKER_01` are per episode and mean nothing across
   episodes. `SPEAKER_?` means no speaker could be assigned.
 - Models are frozen dataclasses (fields cannot be reassigned), and ripperr never
@@ -154,6 +155,25 @@ the turns. Matching rules and limits are in the README.
   combines several calls sees several snapshots.
 - Two processes running `process` on the same database can pick up the same
   episode. Run one at a time.
+
+## Change-feed server
+
+`ripperr serve` exposes a read-only HTTP API for consumers that cannot share the
+SQLite file. It binds to `127.0.0.1:8765` by default; a non-loopback bind
+requires `--token TOKEN`.
+
+`GET /healthz` returns `ok` and the highest committed `change_seq`. `GET
+/v1/changes?after=SEQ&limit=N` returns ascending, cursor-based metadata and
+transcript events. The cursor is advanced by the last returned `seq`; callers
+may safely replay a page.
+
+`GET /v1/episodes/{guid}` returns feed metadata, public episode metadata,
+corrections, and ordered turns. It omits audio and host filesystem paths. The
+response has an ETag derived from the episode GUID and transcript revision and
+returns `304 Not Modified` when `If-None-Match` matches.
+
+`ripperr serve --emit-current` queues a transcript event for every completed
+episode, which is the one-time bootstrap operation for a new consumer.
 
 ## Dependencies
 
