@@ -289,6 +289,14 @@ class Store:
             sql += " WHERE " + " AND ".join(where)
         return [_episode(r) for r in self.conn.execute(sql + " ORDER BY id", params)]
 
+    def source_guids(self, feed_id: int) -> set[str]:
+        return {
+            row["source_guid"]
+            for row in self.conn.execute(
+                "SELECT source_guid FROM episodes WHERE feed_id = ?", (feed_id,)
+            )
+        }
+
     def set_status(
         self,
         episode_id: int,

@@ -165,6 +165,24 @@ def test_resync_refreshes_changed_metadata_but_keeps_state(tmp_path, monkeypatch
     assert store.episode_by_id(1).published == "2025-02-02T00:00:00+00:00"
 
 
+def test_new_feed_starts_at_latest_and_follows_new_entries(tmp_path, monkeypatch):
+    episodes = [
+        {"source_guid": "newest", "title": "Newest", "published": None, "audio_url": "a"},
+        {"source_guid": "older", "title": "Older", "published": None, "audio_url": "b"},
+    ]
+    monkeypatch.setattr("ripperr.feeds.parse_feed", lambda _: ("Show", episodes))
+
+    rip = Ripperr(Config(root=tmp_path), log=lambda _: None)
+    rip.add_feed("http://feed")
+    assert rip.sync() == 1
+    assert [episode.source_guid for episode in rip.episodes()] == ["newest"]
+
+    assert rip.sync() == 0
+    episodes.insert(0, {"source_guid": "newer", "title": "Newer", "published": None, "audio_url": "c"})
+    assert rip.sync() == 1
+    assert [episode.source_guid for episode in rip.episodes()] == ["newest", "newer"]
+
+
 # ---- cache durability ------------------------------------------------------
 
 

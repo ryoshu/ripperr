@@ -32,6 +32,16 @@ def sync_feeds(store: Store, log: Log = print) -> int:
             continue
         if title and title != feed.title:
             store.add_feed(feed.url, title)
+        known = store.source_guids(feed.id)
+        if known:
+            fresh = []
+            for episode in episodes:
+                if episode["source_guid"] in known:
+                    break
+                fresh.append(episode)
+            episodes = fresh
+        else:
+            episodes = episodes[:1]
         new = sum(
             store.add_episode(
                 feed.id, ep["source_guid"], ep["title"], ep["published"], ep["audio_url"],
