@@ -92,6 +92,53 @@ def test_non_loopback_handler_requires_token(tmp_path):
         thread.join()
 
 
+def test_episode_etag_tracks_episode_feed_and_transcript_metadata(tmp_path):
+    db = tmp_path / "r.db"
+    store = Store(db)
+    feed = store.add_feed("https://feed", "Show")
+    store.add_episode(feed.id, "one", "One", None, "https://audio", "https://show/one")
+    episode = store.episode_by_id(1)
+    store.close()
+
+    server, thread = _server(db)
+    try:
+        status, headers, body = _get(server, f"/v1/episodes/{episode.guid}")
+        assert status == 200 and body["title"] == "One"
+        old_etag = headers["ETag"]
+
+        store = Store(db)
+        store.add_episode(feed.id, "one", "Two", None, "https://audio", "https://show/two")
+        store.close()
+
+        status, headers, body = _get(
+            server, f"/v1/episodes/{episode.guid}", {"If-None-Match": old_etag})
+        assert status == 200 and headers["ETag"] != old_etag
+        assert body["title"] == "Two" and body["source_url"] == "https://show/two"
+        episode_etag = headers["ETag"]
+
+        store = Store(db)
+        store.add_feed("https://feed", "Renamed Show")
+        store.close()
+
+        status, headers, body = _get(
+            server, f"/v1/episodes/{episode.guid}", {"If-None-Match": episode_etag})
+        assert status == 200 and headers["ETag"] != episode_etag
+        assert body["feed"]["title"] == "Renamed Show"
+        feed_etag = headers["ETag"]
+
+        store = Store(db)
+        store.replace_turns(store.episode_by_id(1).id, [Turn(0, "S", 0, 1, "hello")])
+        store.close()
+
+        status, headers, body = _get(
+            server, f"/v1/episodes/{episode.guid}", {"If-None-Match": feed_etag})
+        assert status == 200 and headers["ETag"] != feed_etag
+        assert body["turns"][0]["text"] == "hello"
+    finally:
+        server.shutdown()
+        thread.join()
+
+
 def test_serve_rejects_plaintext_remote_bind(tmp_path):
     with pytest.raises(ValueError, match="TLS reverse proxy or tunnel"):
         serve(tmp_path / "r.db", host="0.0.0.0", token="secret")

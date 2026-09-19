@@ -82,14 +82,8 @@ def make_handler(db_path: Path, token: str | None = None):
                 if episode is None:
                     _json(self, {"error": "not found"}, HTTPStatus.NOT_FOUND)
                     return
-                etag = '"' + hashlib.sha256(f"{guid}:{episode.revision}".encode()).hexdigest()[:32] + '"'
-                if self.headers.get("If-None-Match") == etag:
-                    self.send_response(HTTPStatus.NOT_MODIFIED)
-                    self.send_header("ETag", etag)
-                    self.end_headers()
-                    return
                 feed = store.feed(episode.feed_id)
-                _json(self, {
+                body = {
                     "guid": episode.guid,
                     "source_guid": episode.source_guid,
                     "feed": {"id": feed.id, "url": feed.url, "title": feed.title},
@@ -103,7 +97,16 @@ def make_handler(db_path: Path, token: str | None = None):
                     "merged_at": episode.merged_at,
                     "corrections": [c.__dict__ for c in store.corrections(episode.id)],
                     "turns": [t.__dict__ for t in store.turns(episode.id)],
-                }, headers={"ETag": etag})
+                }
+                etag = '"' + hashlib.sha256(json.dumps(
+                    body, sort_keys=True, separators=(",", ":"), default=str
+                ).encode()).hexdigest()[:32] + '"'
+                if self.headers.get("If-None-Match") == etag:
+                    self.send_response(HTTPStatus.NOT_MODIFIED)
+                    self.send_header("ETag", etag)
+                    self.end_headers()
+                    return
+                _json(self, body, headers={"ETag": etag})
                 return
 
             _json(self, {"error": "not found"}, HTTPStatus.NOT_FOUND)
