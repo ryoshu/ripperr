@@ -158,8 +158,9 @@ the turns. Matching rules and limits are in the README.
 
 ## Change-feed server
 
-`ripperr serve` exposes a read-only HTTP API for consumers that cannot share the
-SQLite file. It binds to `127.0.0.1:8765` by default and rejects non-loopback
+`ripperr serve` exposes an HTTP API for consumers that cannot share the SQLite
+file. Transcript data is read-only; the feed registry also has an authenticated
+add operation. It binds to `127.0.0.1:8765` by default and rejects non-loopback
 binds: bearer tokens authenticate requests but do not encrypt HTTP traffic.
 For a remote consumer, keep Ripperr loopback-only and put a TLS reverse proxy,
 SSH tunnel, or private-network gateway in front of it. `--token TOKEN` remains
@@ -169,6 +170,12 @@ available as defense in depth behind that trusted boundary.
 /v1/changes?after=SEQ&limit=N` returns ascending, cursor-based metadata and
 transcript events. The cursor is advanced by the last returned `seq`; callers
 may safely replay a page.
+
+`GET /v1/feeds` returns the registered feed ids, URLs and titles. `POST
+/v1/feeds` accepts `{"url": "https://…", "title": "…"}` and returns the
+idempotently stored feed. Feed writes require `ripperr serve --token TOKEN`,
+and the caller must send `Authorization: Bearer TOKEN`; the server refuses feed
+writes when no token is configured.
 
 `GET /v1/episodes/{guid}` returns feed metadata, public episode metadata,
 corrections, and ordered turns. It omits audio and host filesystem paths. The

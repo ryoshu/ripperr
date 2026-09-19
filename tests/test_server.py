@@ -32,6 +32,22 @@ def _get(server, path, headers=None):
         return exc.code, dict(exc.headers), json.loads(raw) if raw else None
 
 
+def _post(server, path, body, headers=None):
+    req = Request(
+        f"http://127.0.0.1:{server.server_port}{path}",
+        data=json.dumps(body).encode(),
+        headers={"Content-Type": "application/json", **(headers or {})},
+        method="POST",
+    )
+    try:
+        with urlopen(req) as response:
+            raw = response.read()
+            return response.status, dict(response.headers), json.loads(raw) if raw else None
+    except HTTPError as exc:
+        raw = exc.read()
+        return exc.code, dict(exc.headers), json.loads(raw) if raw else None
+
+
 def test_transcript_and_metadata_events_are_transactional(tmp_path):
     store = Store(tmp_path / "r.db")
     feed = store.add_feed("https://feed")
@@ -90,6 +106,43 @@ def test_non_loopback_handler_requires_token(tmp_path):
         assert status == 401
         status, _, body = _get(server, "/healthz", {"Authorization": "Bearer secret"})
         assert status == 200 and body["ok"]
+    finally:
+        server.shutdown()
+        thread.join()
+
+
+def test_feed_management_lists_and_adds_with_token(tmp_path):
+    db = tmp_path / "r.db"
+    Store(db).close()
+    server, thread = _server(db, "secret")
+    try:
+        status, _, body = _get(server, "/v1/feeds", {"Authorization": "Bearer secret"})
+        assert status == 200 and body == {"feeds": []}
+
+        status, _, body = _post(
+            server,
+            "/v1/feeds",
+            {"url": "https://example.com/feed.xml", "title": "Example"},
+            {"Authorization": "Bearer secret"},
+        )
+        assert status == 201
+        assert body["feed"] == {"id": 1, "url": "https://example.com/feed.xml", "title": "Example"}
+
+        status, _, body = _get(server, "/v1/feeds", {"Authorization": "Bearer secret"})
+        assert status == 200 and body["feeds"] == [body["feeds"][0]]
+        assert body["feeds"][0]["url"] == "https://example.com/feed.xml"
+    finally:
+        server.shutdown()
+        thread.join()
+
+
+def test_feed_management_requires_token_even_on_loopback(tmp_path):
+    db = tmp_path / "r.db"
+    Store(db).close()
+    server, thread = _server(db)
+    try:
+        status, _, body = _post(server, "/v1/feeds", {"url": "https://example.com/feed.xml"})
+        assert status == 503 and "bearer token" in body["error"]
     finally:
         server.shutdown()
         thread.join()

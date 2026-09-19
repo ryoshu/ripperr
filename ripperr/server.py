@@ -1,4 +1,4 @@
-"""Small read-only HTTP change-feed server for podcast consumers."""
+"""Small HTTP server for podcast feeds and transcript change consumers."""
 
 from __future__ import annotations
 
@@ -41,9 +41,7 @@ def make_handler(db_path: Path, token: str | None = None):
             return
 
         def do_GET(self) -> None:  # noqa: N802
-            if token and self.headers.get("Authorization") != f"Bearer {token}":
-                _json(self, {"error": "unauthorized"}, HTTPStatus.UNAUTHORIZED,
-                      {"WWW-Authenticate": "Bearer"})
+            if not self._authorized():
                 return
             parsed = urlparse(self.path)
             try:
@@ -56,6 +54,32 @@ def make_handler(db_path: Path, token: str | None = None):
                 _json(self, {"error": str(exc)}, HTTPStatus.BAD_REQUEST)
             except Exception:  # noqa: BLE001 - never leak a traceback or host path over HTTP
                 _json(self, {"error": "internal server error"}, HTTPStatus.INTERNAL_SERVER_ERROR)
+
+        def do_POST(self) -> None:  # noqa: N802
+            if not self._authorized(write=True):
+                return
+            parsed = urlparse(self.path)
+            try:
+                store = Store(db_path)
+                try:
+                    self._post(store, parsed)
+                finally:
+                    store.close()
+            except ValueError as exc:
+                _json(self, {"error": str(exc)}, HTTPStatus.BAD_REQUEST)
+            except Exception:  # noqa: BLE001 - never leak a traceback or host path over HTTP
+                _json(self, {"error": "internal server error"}, HTTPStatus.INTERNAL_SERVER_ERROR)
+
+        def _authorized(self, *, write: bool = False) -> bool:
+            if write and not token:
+                _json(self, {"error": "feed management requires a bearer token"},
+                      HTTPStatus.SERVICE_UNAVAILABLE)
+                return False
+            if token and self.headers.get("Authorization") != f"Bearer {token}":
+                _json(self, {"error": "unauthorized"}, HTTPStatus.UNAUTHORIZED,
+                      {"WWW-Authenticate": "Bearer"})
+                return False
+            return True
 
         def _get(self, store: Store, parsed) -> None:
             if parsed.path == "/healthz":
@@ -73,6 +97,10 @@ def make_handler(db_path: Path, token: str | None = None):
                     "next_cursor": next_cursor,
                     "has_more": bool(changes) and next_cursor < store.highest_change_seq(),
                 })
+                return
+
+            if parsed.path == "/v1/feeds":
+                _json(self, {"feeds": [_feed_json(feed) for feed in store.feeds()]})
                 return
 
             prefix = "/v1/episodes/"
@@ -118,7 +146,44 @@ def make_handler(db_path: Path, token: str | None = None):
 
             _json(self, {"error": "not found"}, HTTPStatus.NOT_FOUND)
 
+        def _post(self, store: Store, parsed) -> None:
+            if parsed.path != "/v1/feeds":
+                _json(self, {"error": "not found"}, HTTPStatus.NOT_FOUND)
+                return
+
+            try:
+                length = int(self.headers.get("Content-Length", "0"))
+            except ValueError as exc:
+                raise ValueError("invalid content length") from exc
+            if length <= 0 or length > 16_384:
+                raise ValueError("request body must be between 1 and 16384 bytes")
+            try:
+                body = json.loads(self.rfile.read(length))
+            except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+                raise ValueError("request body must be JSON") from exc
+            if not isinstance(body, dict):
+                raise ValueError("request body must be an object")
+
+            url = body.get("url")
+            if not isinstance(url, str) or not url.strip():
+                raise ValueError("url is required")
+            url = url.strip()
+            parsed_url = urlparse(url)
+            if parsed_url.scheme not in {"http", "https"} or not parsed_url.netloc:
+                raise ValueError("url must be an http or https URL")
+
+            title = body.get("title")
+            if title is not None and not isinstance(title, str):
+                raise ValueError("title must be a string")
+            title = title.strip() if title else None
+            feed = store.add_feed(url, title)
+            _json(self, {"feed": _feed_json(feed)}, HTTPStatus.CREATED)
+
     return Handler
+
+
+def _feed_json(feed) -> dict[str, object]:
+    return {"id": feed.id, "url": feed.url, "title": feed.title}
 
 
 def _integer(query, name: str, default: int, minimum: int, maximum: int | None = None) -> int:
