@@ -7,7 +7,7 @@ from urllib.request import Request, urlopen
 import pytest
 
 from ripperr.models import Turn
-from ripperr.server import make_handler
+from ripperr.server import make_handler, serve
 from ripperr.store import Store
 
 
@@ -90,3 +90,8 @@ def test_non_loopback_handler_requires_token(tmp_path):
     finally:
         server.shutdown()
         thread.join()
+
+
+def test_serve_rejects_plaintext_remote_bind(tmp_path):
+    with pytest.raises(ValueError, match="TLS reverse proxy or tunnel"):
+        serve(tmp_path / "r.db", host="0.0.0.0", token="secret")

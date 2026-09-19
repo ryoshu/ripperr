@@ -159,8 +159,11 @@ the turns. Matching rules and limits are in the README.
 ## Change-feed server
 
 `ripperr serve` exposes a read-only HTTP API for consumers that cannot share the
-SQLite file. It binds to `127.0.0.1:8765` by default; a non-loopback bind
-requires `--token TOKEN`.
+SQLite file. It binds to `127.0.0.1:8765` by default and rejects non-loopback
+binds: bearer tokens authenticate requests but do not encrypt HTTP traffic.
+For a remote consumer, keep Ripperr loopback-only and put a TLS reverse proxy,
+SSH tunnel, or private-network gateway in front of it. `--token TOKEN` remains
+available as defense in depth behind that trusted boundary.
 
 `GET /healthz` returns `ok` and the highest committed `change_seq`. `GET
 /v1/changes?after=SEQ&limit=N` returns ascending, cursor-based metadata and

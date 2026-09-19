@@ -151,7 +151,7 @@ def build_parser() -> argparse.ArgumentParser:
     sv = sub.add_parser("serve", help="serve the transcript change feed over HTTP")
     sv.add_argument("--host", default="127.0.0.1")
     sv.add_argument("--port", type=int, default=8765)
-    sv.add_argument("--token", help="bearer token required for non-loopback binds")
+    sv.add_argument("--token", help="optional bearer token for loopback defense in depth")
     sv.add_argument("--emit-current", action="store_true",
                     help="enqueue current completed episodes for bootstrap")
     sv.set_defaults(func=cmd_serve)

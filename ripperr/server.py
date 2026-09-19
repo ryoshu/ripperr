@@ -124,8 +124,10 @@ def _integer(query, name: str, default: int, minimum: int, maximum: int | None =
 
 def serve(db_path: Path, host: str = "127.0.0.1", port: int = 8765,
           token: str | None = None, emit_current: bool = False) -> None:
-    if not _loopback(host) and not token:
-        raise ValueError("--token is required when --host is not loopback")
+    if not _loopback(host):
+        raise ValueError(
+            "--host must be loopback; use a TLS reverse proxy or tunnel for remote consumers"
+        )
     if emit_current:
         store = Store(db_path)
         try:
