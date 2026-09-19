@@ -142,6 +142,42 @@ def test_episode_etag_tracks_episode_feed_and_transcript_metadata(tmp_path):
         thread.join()
 
 
+def test_episode_response_uses_one_snapshot(tmp_path, monkeypatch):
+    db = tmp_path / "r.db"
+    store = Store(db)
+    feed = store.add_feed("https://feed", "Show")
+    store.add_episode(feed.id, "one", "One", None, "https://audio", "https://show/one")
+    episode = store.episode_by_id(1)
+    store.replace_turns(episode.id, [Turn(0, "S", 0, 1, "old")])
+    store.close()
+
+    original_turns = Store.turns
+    replaced = False
+
+    def replace_before_read(current, episode_id):
+        nonlocal replaced
+        if not replaced:
+            replaced = True
+            writer = Store(db)
+            writer.replace_turns(episode_id, [Turn(0, "S", 0, 1, "new")])
+            writer.close()
+        return original_turns(current, episode_id)
+
+    monkeypatch.setattr(Store, "turns", replace_before_read)
+    server, thread = _server(db)
+    try:
+        status, _, body = _get(server, f"/v1/episodes/{episode.guid}")
+        assert status == 200
+        assert (body["revision"], body["turns"][0]["text"]) in ((1, "old"), (2, "new"))
+
+        status, _, body = _get(server, f"/v1/episodes/{episode.guid}")
+        assert status == 200 and body["revision"] == 2
+        assert body["turns"][0]["text"] == "new"
+    finally:
+        server.shutdown()
+        thread.join()
+
+
 def test_serve_rejects_plaintext_remote_bind(tmp_path):
     with pytest.raises(ValueError, match="TLS reverse proxy or tunnel"):
         serve(tmp_path / "r.db", host="0.0.0.0", token="secret")

@@ -78,29 +78,36 @@ def make_handler(db_path: Path, token: str | None = None):
             prefix = "/v1/episodes/"
             if parsed.path.startswith(prefix) and parsed.path.count("/") == 3:
                 guid = unquote(parsed.path[len(prefix):])
-                episode = store.episode(guid)
-                if episode is None:
-                    _json(self, {"error": "not found"}, HTTPStatus.NOT_FOUND)
+                with store.snapshot():
+                    episode = store.episode(guid)
+                    if episode is None:
+                        body = {"error": "not found"}
+                        status = HTTPStatus.NOT_FOUND
+                        etag = None
+                    else:
+                        feed = store.feed(episode.feed_id)
+                        body = {
+                            "guid": episode.guid,
+                            "source_guid": episode.source_guid,
+                            "feed": {"id": feed.id, "url": feed.url, "title": feed.title},
+                            "title": episode.title,
+                            "published": episode.published,
+                            "source_url": episode.source_url,
+                            "duration": episode.duration,
+                            "status": episode.status,
+                            "updated_at": episode.updated_at,
+                            "revision": episode.revision,
+                            "merged_at": episode.merged_at,
+                            "corrections": [c.__dict__ for c in store.corrections(episode.id)],
+                            "turns": [t.__dict__ for t in store.turns(episode.id)],
+                        }
+                        status = HTTPStatus.OK
+                        etag = '"' + hashlib.sha256(json.dumps(
+                            body, sort_keys=True, separators=(",", ":"), default=str
+                        ).encode()).hexdigest()[:32] + '"'
+                if status == HTTPStatus.NOT_FOUND:
+                    _json(self, body, status)
                     return
-                feed = store.feed(episode.feed_id)
-                body = {
-                    "guid": episode.guid,
-                    "source_guid": episode.source_guid,
-                    "feed": {"id": feed.id, "url": feed.url, "title": feed.title},
-                    "title": episode.title,
-                    "published": episode.published,
-                    "source_url": episode.source_url,
-                    "duration": episode.duration,
-                    "status": episode.status,
-                    "updated_at": episode.updated_at,
-                    "revision": episode.revision,
-                    "merged_at": episode.merged_at,
-                    "corrections": [c.__dict__ for c in store.corrections(episode.id)],
-                    "turns": [t.__dict__ for t in store.turns(episode.id)],
-                }
-                etag = '"' + hashlib.sha256(json.dumps(
-                    body, sort_keys=True, separators=(",", ":"), default=str
-                ).encode()).hexdigest()[:32] + '"'
                 if self.headers.get("If-None-Match") == etag:
                     self.send_response(HTTPStatus.NOT_MODIFIED)
                     self.send_header("ETag", etag)
