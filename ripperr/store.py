@@ -179,12 +179,17 @@ class Store:
 
     def add_feed(self, url: str, title: str | None = None) -> Feed:
         with self.tx() as c:
+            existing = c.execute("SELECT id, title FROM feeds WHERE url = ?", (url,)).fetchone()
             c.execute(
                 "INSERT OR IGNORE INTO feeds (url, title, added_at) VALUES (?, ?, ?)",
                 (url, title, _now()),
             )
-            if title:
+            if title and existing and title != existing["title"]:
                 c.execute("UPDATE feeds SET title = ? WHERE url = ?", (title, url))
+                for row in c.execute(
+                    "SELECT guid, revision FROM episodes WHERE feed_id = ?", (existing["id"],)
+                ):
+                    self._insert_change(c, row["guid"], row["revision"], "metadata")
         row = self.conn.execute("SELECT * FROM feeds WHERE url = ?", (url,)).fetchone()
         return _feed(row)
 

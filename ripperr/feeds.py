@@ -47,10 +47,10 @@ def _enclosure_url(entry) -> str | None:
 
 def _source_url(entry) -> str | None:
     """Return the public episode page, never an enclosure URL."""
-    link = getattr(entry, "link", None)
-    if link and not str(link).lower().endswith((".mp3", ".m4a", ".wav", ".ogg", ".mp4")):
-        return str(link)
     enclosure = _enclosure_url(entry)
+    link = getattr(entry, "link", None)
+    if link and str(link) != enclosure:
+        return str(link)
     for candidate in getattr(entry, "links", []) or []:
         if candidate.get("rel") in (None, "alternate") and candidate.get("href"):
             href = str(candidate["href"])

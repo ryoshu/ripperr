@@ -54,8 +54,8 @@ def make_handler(db_path: Path, token: str | None = None):
                     store.close()
             except ValueError as exc:
                 _json(self, {"error": str(exc)}, HTTPStatus.BAD_REQUEST)
-            except Exception as exc:  # noqa: BLE001 - never leak a traceback over HTTP
-                _json(self, {"error": str(exc)}, HTTPStatus.INTERNAL_SERVER_ERROR)
+            except Exception:  # noqa: BLE001 - never leak a traceback or host path over HTTP
+                _json(self, {"error": "internal server error"}, HTTPStatus.INTERNAL_SERVER_ERROR)
 
         def _get(self, store: Store, parsed) -> None:
             if parsed.path == "/healthz":

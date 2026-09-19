@@ -45,6 +45,8 @@ def test_transcript_and_metadata_events_are_transactional(tmp_path):
     store.replace_turns(episode.id, [Turn(0, "S", 0, 1, "hello")])
     assert [(x["kind"], x["revision"]) for x in store.changes()] == [
         ("metadata", 0), ("transcript", 1)]
+    store.add_feed("https://feed", "Renamed Show")
+    assert store.changes()[-1]["kind"] == "metadata"
 
 
 def test_server_change_feed_and_revision_etag(tmp_path):
