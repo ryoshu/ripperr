@@ -25,9 +25,11 @@ def _get(server, path, headers=None):
     req = Request(f"http://127.0.0.1:{server.server_port}{path}", headers=headers or {})
     try:
         with urlopen(req) as response:
-            return response.status, dict(response.headers), json.load(response)
+            raw = response.read()
+            return response.status, dict(response.headers), json.loads(raw) if raw else None
     except HTTPError as exc:
-        return exc.code, dict(exc.headers), json.load(exc)
+        raw = exc.read()
+        return exc.code, dict(exc.headers), json.loads(raw) if raw else None
 
 
 def test_transcript_and_metadata_events_are_transactional(tmp_path):
@@ -70,9 +72,10 @@ def test_server_change_feed_and_revision_etag(tmp_path):
         status, headers, body = _get(server, f"/v1/episodes/{ep.guid}")
         assert status == 200 and body["source_url"] == "https://show/one"
         assert "audio_path" not in body and "audio_url" not in body
-        status, _, _ = _get(server, f"/v1/episodes/{ep.guid}",
-                             {"If-None-Match": headers["ETag"]})
-        assert status == 304
+        status, unchanged_headers, body = _get(
+            server, f"/v1/episodes/{ep.guid}", {"If-None-Match": headers["ETag"]})
+        assert status == 304 and body is None
+        assert unchanged_headers["ETag"] == headers["ETag"]
     finally:
         server.shutdown()
         thread.join()
