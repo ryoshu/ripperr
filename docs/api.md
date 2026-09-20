@@ -173,9 +173,11 @@ may safely replay a page.
 
 `GET /v1/feeds` returns the registered feed ids, URLs and titles. `POST
 /v1/feeds` accepts `{"url": "https://…", "title": "…"}` and returns the
-idempotently stored feed. Feed writes require `ripperr serve --token TOKEN`,
-and the caller must send `Authorization: Bearer TOKEN`; the server refuses feed
-writes when no token is configured.
+idempotently stored feed. `PUT /v1/feeds/{id}` replaces an existing feed's URL
+and title. `DELETE /v1/feeds/{id}` removes the feed and its stored episodes.
+Feed writes require `ripperr serve --token TOKEN`, and the caller must send
+`Authorization: Bearer TOKEN`; the server refuses feed writes when no token is
+configured.
 
 `GET /v1/episodes/{guid}` returns feed metadata, public episode metadata,
 corrections, and ordered turns. It omits audio and host filesystem paths. The

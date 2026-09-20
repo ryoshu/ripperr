@@ -48,6 +48,22 @@ def _post(server, path, body, headers=None):
         return exc.code, dict(exc.headers), json.loads(raw) if raw else None
 
 
+def _request(server, method, path, body=None, headers=None):
+    req = Request(
+        f"http://127.0.0.1:{server.server_port}{path}",
+        data=json.dumps(body).encode() if body is not None else None,
+        headers={"Content-Type": "application/json", **(headers or {})},
+        method=method,
+    )
+    try:
+        with urlopen(req) as response:
+            raw = response.read()
+            return response.status, dict(response.headers), json.loads(raw) if raw else None
+    except HTTPError as exc:
+        raw = exc.read()
+        return exc.code, dict(exc.headers), json.loads(raw) if raw else None
+
+
 def test_transcript_and_metadata_events_are_transactional(tmp_path):
     store = Store(tmp_path / "r.db")
     feed = store.add_feed("https://feed")
@@ -131,6 +147,42 @@ def test_feed_management_lists_and_adds_with_token(tmp_path):
         status, _, body = _get(server, "/v1/feeds", {"Authorization": "Bearer secret"})
         assert status == 200 and body["feeds"] == [body["feeds"][0]]
         assert body["feeds"][0]["url"] == "https://example.com/feed.xml"
+    finally:
+        server.shutdown()
+        thread.join()
+
+
+def test_feed_management_updates_and_deletes_with_token(tmp_path):
+    db = tmp_path / "r.db"
+    store = Store(db)
+    store.add_feed("https://example.com/feed.xml", "Example")
+    store.close()
+    server, thread = _server(db, "secret")
+    try:
+        status, _, body = _request(
+            server,
+            "PUT",
+            "/v1/feeds/1",
+            {"url": "https://example.com/renamed.xml", "title": "Renamed"},
+            {"Authorization": "Bearer secret"},
+        )
+        assert status == 200
+        assert body["feed"] == {
+            "id": 1, "url": "https://example.com/renamed.xml", "title": "Renamed"
+        }
+
+        status, _, body = _request(
+            server, "DELETE", "/v1/feeds/1", headers={"Authorization": "Bearer secret"}
+        )
+        assert status == 200 and body == {"deleted": 1}
+
+        status, _, body = _get(server, "/v1/feeds", {"Authorization": "Bearer secret"})
+        assert status == 200 and body == {"feeds": []}
+
+        status, _, _ = _request(
+            server, "DELETE", "/v1/feeds/1", headers={"Authorization": "Bearer secret"}
+        )
+        assert status == 404
     finally:
         server.shutdown()
         thread.join()

@@ -70,6 +70,40 @@ def make_handler(db_path: Path, token: str | None = None):
             except Exception:  # noqa: BLE001 - never leak a traceback or host path over HTTP
                 _json(self, {"error": "internal server error"}, HTTPStatus.INTERNAL_SERVER_ERROR)
 
+        def do_PUT(self) -> None:  # noqa: N802
+            if not self._authorized(write=True):
+                return
+            parsed = urlparse(self.path)
+            try:
+                store = Store(db_path)
+                try:
+                    self._put(store, parsed)
+                finally:
+                    store.close()
+            except LookupError as exc:
+                _json(self, {"error": str(exc)}, HTTPStatus.NOT_FOUND)
+            except ValueError as exc:
+                _json(self, {"error": str(exc)}, HTTPStatus.BAD_REQUEST)
+            except Exception:  # noqa: BLE001 - never leak a traceback or host path over HTTP
+                _json(self, {"error": "internal server error"}, HTTPStatus.INTERNAL_SERVER_ERROR)
+
+        def do_DELETE(self) -> None:  # noqa: N802
+            if not self._authorized(write=True):
+                return
+            parsed = urlparse(self.path)
+            try:
+                store = Store(db_path)
+                try:
+                    self._delete(store, parsed)
+                finally:
+                    store.close()
+            except LookupError as exc:
+                _json(self, {"error": str(exc)}, HTTPStatus.NOT_FOUND)
+            except ValueError as exc:
+                _json(self, {"error": str(exc)}, HTTPStatus.BAD_REQUEST)
+            except Exception:  # noqa: BLE001 - never leak a traceback or host path over HTTP
+                _json(self, {"error": "internal server error"}, HTTPStatus.INTERNAL_SERVER_ERROR)
+
         def _authorized(self, *, write: bool = False) -> bool:
             if write and not token:
                 _json(self, {"error": "feed management requires a bearer token"},
@@ -151,6 +185,22 @@ def make_handler(db_path: Path, token: str | None = None):
                 _json(self, {"error": "not found"}, HTTPStatus.NOT_FOUND)
                 return
 
+            url, title = self._feed_payload()
+            feed = store.add_feed(url, title)
+            _json(self, {"feed": _feed_json(feed)}, HTTPStatus.CREATED)
+
+        def _put(self, store: Store, parsed) -> None:
+            feed_id = _feed_id(parsed.path)
+            url, title = self._feed_payload()
+            feed = store.update_feed(feed_id, url, title)
+            _json(self, {"feed": _feed_json(feed)})
+
+        def _delete(self, store: Store, parsed) -> None:
+            feed_id = _feed_id(parsed.path)
+            store.delete_feed(feed_id)
+            _json(self, {"deleted": feed_id})
+
+        def _feed_payload(self) -> tuple[str, str | None]:
             try:
                 length = int(self.headers.get("Content-Length", "0"))
             except ValueError as exc:
@@ -176,14 +226,26 @@ def make_handler(db_path: Path, token: str | None = None):
             if title is not None and not isinstance(title, str):
                 raise ValueError("title must be a string")
             title = title.strip() if title else None
-            feed = store.add_feed(url, title)
-            _json(self, {"feed": _feed_json(feed)}, HTTPStatus.CREATED)
+            return url, title
 
     return Handler
 
 
 def _feed_json(feed) -> dict[str, object]:
     return {"id": feed.id, "url": feed.url, "title": feed.title}
+
+
+def _feed_id(path: str) -> int:
+    prefix = "/v1/feeds/"
+    if not path.startswith(prefix) or path.count("/") != 3:
+        raise ValueError("feed path must include an id")
+    try:
+        feed_id = int(path[len(prefix):])
+    except ValueError as exc:
+        raise ValueError("feed id must be an integer") from exc
+    if feed_id < 1:
+        raise ValueError("feed id must be positive")
+    return feed_id
 
 
 def _integer(query, name: str, default: int, minimum: int, maximum: int | None = None) -> int:

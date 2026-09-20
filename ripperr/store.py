@@ -202,6 +202,41 @@ class Store:
             raise LookupError(f"no feed {feed_id}")
         return _feed(row)
 
+    def update_feed(self, feed_id: int, url: str, title: str | None = None) -> Feed:
+        with self.tx() as c:
+            existing = c.execute(
+                "SELECT url, title FROM feeds WHERE id = ?", (feed_id,)
+            ).fetchone()
+            if existing is None:
+                raise LookupError(f"no feed {feed_id}")
+            conflict = c.execute(
+                "SELECT id FROM feeds WHERE url = ? AND id != ?", (url, feed_id)
+            ).fetchone()
+            if conflict is not None:
+                raise ValueError("url already registered")
+            if existing["url"] != url or existing["title"] != title:
+                c.execute(
+                    "UPDATE feeds SET url = ?, title = ? WHERE id = ?",
+                    (url, title, feed_id),
+                )
+                for row in c.execute(
+                    "SELECT guid, revision FROM episodes WHERE feed_id = ?", (feed_id,)
+                ):
+                    self._insert_change(c, row["guid"], row["revision"], "metadata")
+        return self.feed(feed_id)
+
+    def delete_feed(self, feed_id: int) -> None:
+        with self.tx() as c:
+            episode_ids = [
+                row["id"]
+                for row in c.execute("SELECT id FROM episodes WHERE feed_id = ?", (feed_id,))
+            ]
+            if not c.execute("SELECT 1 FROM feeds WHERE id = ?", (feed_id,)).fetchone():
+                raise LookupError(f"no feed {feed_id}")
+            if episode_ids:
+                c.executemany("DELETE FROM turns_fts WHERE episode_id = ?", [(i,) for i in episode_ids])
+            c.execute("DELETE FROM feeds WHERE id = ?", (feed_id,))
+
     # ---- episodes --------------------------------------------------------
 
     def add_episode(
