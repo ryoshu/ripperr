@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import hmac
 import ipaddress
 import json
 from http import HTTPStatus
@@ -110,7 +111,9 @@ def make_handler(db_path: Path, token: str | None = None):
                 _json(self, {"error": "feed management requires a bearer token"},
                       HTTPStatus.SERVICE_UNAVAILABLE)
                 return False
-            if token and self.headers.get("Authorization") != f"Bearer {token}":
+            if token and not hmac.compare_digest(
+                self.headers.get("Authorization", ""), f"Bearer {token}"
+            ):
                 _json(self, {"error": "unauthorized"}, HTTPStatus.UNAUTHORIZED,
                       {"WWW-Authenticate": "Bearer"})
                 return False
@@ -226,6 +229,23 @@ def make_handler(db_path: Path, token: str | None = None):
             parsed_url = urlparse(url)
             if parsed_url.scheme not in {"http", "https"} or not parsed_url.netloc:
                 raise ValueError("url must be an http or https URL")
+            hostname = parsed_url.hostname
+            hostname = hostname.lower().rstrip(".") if hostname else None
+            if hostname is None or hostname == "localhost" or hostname.endswith(".local"):
+                raise ValueError("url host must be publicly routable")
+            try:
+                address = ipaddress.ip_address(hostname)
+            except ValueError:
+                address = None
+            if address is not None and (
+                address.is_loopback
+                or address.is_private
+                or address.is_link_local
+                or address.is_reserved
+                or address.is_multicast
+                or address.is_unspecified
+            ):
+                raise ValueError("url host must be publicly routable")
 
             title = body.get("title")
             if title is not None and not isinstance(title, str):

@@ -233,6 +233,23 @@ def test_feed_management_requires_token_even_on_loopback(tmp_path):
         thread.join()
 
 
+def test_feed_management_rejects_private_hosts(tmp_path):
+    db = tmp_path / "r.db"
+    Store(db).close()
+    server, thread = _server(db, "secret")
+    try:
+        status, _, body = _post(
+            server,
+            "/v1/feeds",
+            {"url": "http://127.0.0.1:8000/private.xml"},
+            {"Authorization": "Bearer secret"},
+        )
+        assert status == 400 and "publicly routable" in body["error"]
+    finally:
+        server.shutdown()
+        thread.join()
+
+
 def test_episode_etag_tracks_episode_feed_and_transcript_metadata(tmp_path):
     db = tmp_path / "r.db"
     store = Store(db)

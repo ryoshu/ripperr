@@ -31,3 +31,10 @@ def test_playlist_sync_uses_flat_metadata_without_page_fetch(monkeypatch):
 
     assert episodes[0]["summary"] == "Notes"
     assert episodes[1]["summary"] is None
+
+
+def test_youtube_detection_requires_a_youtube_hostname():
+    assert youtube.is_youtube("https://www.youtube.com/playlist?list=test")
+    assert youtube.is_youtube("https://youtu.be/video")
+    assert not youtube.is_youtube("https://evil.example/youtube.com/playlist")
+    assert not youtube.is_youtube("https://youtube.com.evil.example/playlist")

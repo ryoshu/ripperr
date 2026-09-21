@@ -18,6 +18,7 @@ from . import youtube
 
 UA = "ripperr/0.1 (personal archival tool)"
 CHUNK = 1 << 16
+MAX_DOWNLOAD_BYTES = 1 << 30
 
 
 def _slug(text: str, limit: int = 60) -> str:
@@ -109,12 +110,27 @@ def download(audio_url: str, dest_dir: Path, title: str | None) -> Path:
         return dest
 
     tmp = dest.with_suffix(dest.suffix + ".part")
-    with requests.get(
-        audio_url, stream=True, timeout=60, headers={"User-Agent": UA}
-    ) as resp:
-        resp.raise_for_status()
-        with open(tmp, "wb") as fh:
-            for chunk in resp.iter_content(CHUNK):
-                fh.write(chunk)
+    try:
+        with requests.get(
+            audio_url, stream=True, timeout=60, headers={"User-Agent": UA}
+        ) as resp:
+            resp.raise_for_status()
+            content_length = resp.headers.get("Content-Length")
+            try:
+                content_length = int(content_length) if content_length else None
+            except ValueError:
+                content_length = None
+            if content_length is not None and content_length > MAX_DOWNLOAD_BYTES:
+                raise RuntimeError("download exceeds the 1 GiB limit")
+            total = 0
+            with open(tmp, "wb") as fh:
+                for chunk in resp.iter_content(CHUNK):
+                    total += len(chunk)
+                    if total > MAX_DOWNLOAD_BYTES:
+                        raise RuntimeError("download exceeds the 1 GiB limit")
+                    fh.write(chunk)
+    except BaseException:
+        tmp.unlink(missing_ok=True)
+        raise
     tmp.rename(dest)
     return dest

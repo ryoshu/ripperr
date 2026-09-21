@@ -7,12 +7,22 @@ to resolve YouTube stream URLs). Audio is transcribed like any other episode.
 from __future__ import annotations
 
 from pathlib import Path
+from urllib.parse import urlparse
 
 _SKIP_TITLES = {None, "[Private video]", "[Deleted video]"}
+_YOUTUBE_HOSTS = {"youtube.com", "www.youtube.com", "m.youtube.com", "music.youtube.com", "youtu.be"}
 
 
 def is_youtube(url: str) -> bool:
-    return "youtube.com/" in url or "youtu.be/" in url
+    try:
+        parsed = urlparse(url)
+    except ValueError:
+        return False
+    return (
+        parsed.scheme in {"http", "https"}
+        and parsed.hostname is not None
+        and parsed.hostname.lower().rstrip(".") in _YOUTUBE_HOSTS
+    )
 
 
 def _ydl(**opts):

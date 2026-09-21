@@ -183,6 +183,8 @@ may safely replay a page.
 /v1/feeds` accepts `{"url": "https://…", "title": "…"}` and returns the
 idempotently stored feed. `PUT /v1/feeds/{id}` replaces an existing feed's URL
 and title. `DELETE /v1/feeds/{id}` removes the feed and its stored episodes.
+Authenticated feed management rejects local/private literal hosts. Direct RSS
+audio downloads are capped at 1 GiB and incomplete files are removed on failure.
 Feed writes require `ripperr serve --token TOKEN`, and the caller must send
 `Authorization: Bearer TOKEN`; the server refuses feed writes when no token is
 configured.
