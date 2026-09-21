@@ -50,60 +50,25 @@ def make_handler(db_path: Path, token: str | None = None, cfg: Config | None = N
             return
 
         def do_GET(self) -> None:  # noqa: N802
-            if not self._authorized():
-                return
-            parsed = urlparse(self.path)
-            try:
-                rip = open_ripperr()
-                try:
-                    self._get(rip, parsed)
-                finally:
-                    rip.close()
-            except ValueError as exc:
-                _json(self, {"error": str(exc)}, HTTPStatus.BAD_REQUEST)
-            except Exception:  # noqa: BLE001 - never leak a traceback or host path over HTTP
-                _json(self, {"error": "internal server error"}, HTTPStatus.INTERNAL_SERVER_ERROR)
+            self._dispatch("GET")
 
         def do_POST(self) -> None:  # noqa: N802
-            if not self._authorized(write=True):
-                return
-            parsed = urlparse(self.path)
-            try:
-                rip = open_ripperr()
-                try:
-                    self._post(rip, parsed)
-                finally:
-                    rip.close()
-            except ValueError as exc:
-                _json(self, {"error": str(exc)}, HTTPStatus.BAD_REQUEST)
-            except Exception:  # noqa: BLE001 - never leak a traceback or host path over HTTP
-                _json(self, {"error": "internal server error"}, HTTPStatus.INTERNAL_SERVER_ERROR)
+            self._dispatch("POST", write=True)
 
         def do_PUT(self) -> None:  # noqa: N802
-            if not self._authorized(write=True):
-                return
-            parsed = urlparse(self.path)
-            try:
-                rip = open_ripperr()
-                try:
-                    self._put(rip, parsed)
-                finally:
-                    rip.close()
-            except LookupError as exc:
-                _json(self, {"error": str(exc)}, HTTPStatus.NOT_FOUND)
-            except ValueError as exc:
-                _json(self, {"error": str(exc)}, HTTPStatus.BAD_REQUEST)
-            except Exception:  # noqa: BLE001 - never leak a traceback or host path over HTTP
-                _json(self, {"error": "internal server error"}, HTTPStatus.INTERNAL_SERVER_ERROR)
+            self._dispatch("PUT", write=True)
 
         def do_DELETE(self) -> None:  # noqa: N802
-            if not self._authorized(write=True):
+            self._dispatch("DELETE", write=True)
+
+        def _dispatch(self, method: str, *, write: bool = False) -> None:
+            if not self._authorized(write=write):
                 return
             parsed = urlparse(self.path)
             try:
                 rip = open_ripperr()
                 try:
-                    self._delete(rip, parsed)
+                    getattr(self, f"_{method.lower()}")(rip, parsed)
                 finally:
                     rip.close()
             except LookupError as exc:
