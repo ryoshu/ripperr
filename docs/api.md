@@ -58,6 +58,7 @@ were the feed's own ids.
 | `stats() -> dict[str, int]` | Episode count per status. |
 | `change_seq() -> int` | Highest committed change-feed sequence number. |
 | `changes(after=0, limit=100) -> list[Change]` | Returns cursor-based transcript and metadata change events in ascending sequence order. |
+| `prune_changes(through) -> int` | Deletes events through an acknowledged sequence number and returns the number removed. This invalidates cursors at or before `through`, so call it only after every consumer has advanced past them. |
 | `emit_current() -> int` | Queues the current revision of every completed episode for a new consumer's bootstrap. |
 
 ## Episode lifecycle
@@ -98,6 +99,11 @@ is the canonical contract. It provides an ordered cursor and includes metadata,
 transcript, and deleted events. `episodes(updated_since=...)` is a local polling
 convenience: it is inclusive, can repeat rows, and also sees internal status or
 audio bookkeeping that does not create a change event.
+
+Change events remain durable until explicitly pruned with `prune_changes`; the
+caller is responsible for confirming that every consumer has advanced past the
+pruned sequence. The sequence high-water mark is retained, so later events
+continue to have monotonically increasing cursors.
 
 A change-feed consumer should:
 

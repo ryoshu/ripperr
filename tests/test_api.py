@@ -85,6 +85,24 @@ def test_emit_current_is_available_through_public_api(tmp_path):
     rip.close()
 
 
+def test_prune_changes_requires_acknowledged_cursor_and_keeps_sequence_monotonic(tmp_path):
+    rip = Ripperr(Config(root=tmp_path), log=lambda _: None)
+    feed = rip.add_feed("http://feed")
+    rip.store.add_episode(feed.id, "one", "One", None, "http://audio/one")
+    assert rip.change_seq() == 1
+
+    assert rip.prune_changes(1) == 1
+    assert rip.changes() == []
+    assert rip.change_seq() == 1
+
+    rip.store.add_episode(feed.id, "two", "Two", None, "http://audio/two")
+    assert rip.change_seq() == 2
+    assert rip.changes(after=1)[0].seq == 2
+    with pytest.raises(ValueError):
+        rip.prune_changes(-1)
+    rip.close()
+
+
 def test_public_feed_management_and_episode_pagination(tmp_path):
     rip = Ripperr(Config(root=tmp_path), log=lambda _: None)
     feed = rip.add_feed("http://feed", "Old")

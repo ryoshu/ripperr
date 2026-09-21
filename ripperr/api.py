@@ -155,6 +155,10 @@ class Ripperr:
     def changes(self, after: int = 0, limit: int = 100) -> list[Change]:
         return self.store.changes(after, limit)
 
+    def prune_changes(self, through: int) -> int:
+        """Delete change events through a sequence all consumers have acknowledged."""
+        return self.store.prune_changes(through)
+
     def emit_current(self) -> int:
         """Queue the current revision of every completed episode for bootstrap."""
         return self.store.emit_current()

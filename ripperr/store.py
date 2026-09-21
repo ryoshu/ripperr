@@ -520,7 +520,12 @@ class Store:
         )
 
     def highest_change_seq(self) -> int:
-        row = self.conn.execute("SELECT COALESCE(MAX(seq), 0) AS seq FROM changes").fetchone()
+        row = self.conn.execute(
+            """SELECT MAX(
+                       COALESCE((SELECT MAX(seq) FROM changes), 0),
+                       COALESCE((SELECT seq FROM sqlite_sequence WHERE name = 'changes'), 0)
+                   ) AS seq"""
+        ).fetchone()
         return int(row["seq"])
 
     def changes(self, after: int = 0, limit: int = 100) -> list[Change]:
@@ -530,6 +535,13 @@ class Store:
             (after, limit),
         )
         return [Change(**dict(row)) for row in rows]
+
+    def prune_changes(self, through: int) -> int:
+        """Delete change events through a caller-confirmed sequence number."""
+        if through < 0:
+            raise ValueError("change sequence must be non-negative")
+        with self.tx() as c:
+            return c.execute("DELETE FROM changes WHERE seq <= ?", (through,)).rowcount
 
     def emit_current(self) -> int:
         """Queue the current revision of every completed episode for bootstrap."""
