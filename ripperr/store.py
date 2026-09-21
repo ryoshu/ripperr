@@ -19,7 +19,7 @@ from typing import Iterator, Sequence
 
 from .models import Change, Correction, Episode, Feed, Hit, SpeakerName, Turn
 
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 6
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS feeds (
@@ -45,7 +45,8 @@ CREATE TABLE IF NOT EXISTS episodes (
     error       TEXT,
     updated_at  TEXT NOT NULL,
     revision    INTEGER NOT NULL DEFAULT 0,
-    merged_at   TEXT
+    merged_at   TEXT,
+    diarization_key TEXT
 );
 
 CREATE INDEX IF NOT EXISTS idx_episodes_status ON episodes(status);
@@ -229,6 +230,11 @@ class Store:
                    GROUP BY episode_guid
                    ON CONFLICT(guid) DO UPDATE SET revision = MAX(revision, excluded.revision)"""
             )
+
+        if version < 6:
+            cols = {r["name"] for r in self.conn.execute("PRAGMA table_info(episodes)")}
+            if "diarization_key" not in cols:
+                self.conn.execute("ALTER TABLE episodes ADD COLUMN diarization_key TEXT")
 
     def close(self) -> None:
         self.conn.close()
@@ -505,10 +511,15 @@ class Store:
     ) -> SpeakerName:
         with self.tx() as c:
             episode = c.execute(
-                "SELECT revision FROM episodes WHERE guid = ?", (episode_guid,)
+                "SELECT id, revision FROM episodes WHERE guid = ?", (episode_guid,)
             ).fetchone()
             if episode is None:
                 raise LookupError(f"no episode {episode_guid}")
+            if c.execute(
+                "SELECT 1 FROM turns WHERE episode_id = ? AND speaker = ? LIMIT 1",
+                (episode["id"], speaker),
+            ).fetchone() is None:
+                raise ValueError(f"unknown speaker {speaker}")
             existing = c.execute(
                 "SELECT name, method, confidence FROM speaker_names "
                 "WHERE episode_guid = ? AND speaker = ?",
@@ -527,8 +538,19 @@ class Store:
                          updated_at = excluded.updated_at""",
                     (episode_guid, speaker, name, method, confidence, now),
                 )
+                c.execute(
+                    "UPDATE episodes SET updated_at = ? WHERE id = ?",
+                    (now, episode["id"]),
+                )
                 self._insert_change(c, episode_guid, episode["revision"], "metadata")
-        return next(mapping for mapping in self.speaker_names(episode_guid) if mapping.speaker == speaker)
+            row = c.execute(
+                "SELECT episode_guid, speaker, name, method, confidence, updated_at "
+                "FROM speaker_names WHERE episode_guid = ? AND speaker = ?",
+                (episode_guid, speaker),
+            ).fetchone()
+            if row is None:
+                raise LookupError(f"no speaker name for {speaker}")
+            return SpeakerName(**dict(row))
 
     def delete_speaker_name(self, episode_guid: str, speaker: str) -> None:
         with self.tx() as c:
@@ -542,6 +564,10 @@ class Store:
                 (episode_guid, speaker),
             ).rowcount
             if deleted:
+                c.execute(
+                    "UPDATE episodes SET updated_at = ? WHERE guid = ?",
+                    (_now(), episode_guid),
+                )
                 self._insert_change(c, episode_guid, episode["revision"], "metadata")
 
     # ---- transcripts -----------------------------------------------------
@@ -551,6 +577,8 @@ class Store:
         episode_id: int,
         turns: Sequence[Turn],
         corrections: Sequence[Correction] = (),
+        *,
+        diarization_key: str | None = None,
     ) -> None:
         """Swap in a new transcript, bump the episode's revision and mark it done,
         all in one transaction: a reader never sees a transcript on an episode that
@@ -563,10 +591,37 @@ class Store:
                 (now, now, STATUS_DONE, episode_id),
             )
             episode = c.execute(
-                "SELECT guid, revision FROM episodes WHERE id = ?", (episode_id,)
+                "SELECT guid, revision, diarization_key FROM episodes WHERE id = ?",
+                (episode_id,),
             ).fetchone()
             if episode is None:
                 raise LookupError(f"no episode {episode_id}")
+            if diarization_key is not None and (
+                episode["diarization_key"] is not None
+                and episode["diarization_key"] != diarization_key
+            ):
+                c.execute(
+                    "DELETE FROM speaker_names WHERE episode_guid = ?",
+                    (episode["guid"],),
+                )
+            if diarization_key is not None:
+                c.execute(
+                    "UPDATE episodes SET diarization_key = ? WHERE id = ?",
+                    (diarization_key, episode_id),
+                )
+            speakers = {turn.speaker for turn in turns}
+            if speakers:
+                placeholders = ", ".join("?" for _ in speakers)
+                c.execute(
+                    f"DELETE FROM speaker_names WHERE episode_guid = ? "
+                    f"AND speaker NOT IN ({placeholders})",
+                    [episode["guid"], *speakers],
+                )
+            else:
+                c.execute(
+                    "DELETE FROM speaker_names WHERE episode_guid = ?",
+                    (episode["guid"],),
+                )
             c.execute("DELETE FROM corrections WHERE episode_id = ?", (episode_id,))
             c.executemany(
                 "INSERT INTO corrections (episode_id, heard, fixed, count) VALUES (?, ?, ?, ?)",

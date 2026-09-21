@@ -73,8 +73,9 @@ def cmd_show(args, rip: Ripperr) -> int:
         return 1
 
     lines = [f"# {tr.episode.title or tr.episode.guid}", ""]
+    speaker_names = {mapping.speaker: mapping.name for mapping in tr.speaker_names}
     for t in tr.turns:
-        lines.append(f"**{t.speaker}** ({_fmt_time(t.start)})")
+        lines.append(f"**{speaker_names.get(t.speaker, t.speaker)}** ({_fmt_time(t.start)})")
         lines.append(t.text)
         lines.append("")
 

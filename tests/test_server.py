@@ -398,6 +398,7 @@ def test_episode_speaker_names_can_be_managed_with_token(tmp_path):
     feed = store.add_feed("https://feed")
     store.add_episode(feed.id, "one", "One", None, "https://audio")
     guid = store.episode_by_id(1).guid
+    store.replace_turns(1, [Turn(0, "SPEAKER_00", 0, 1, "hello")])
     store.close()
 
     server, thread = _server(db, "secret")
@@ -411,7 +412,11 @@ def test_episode_speaker_names_can_be_managed_with_token(tmp_path):
         )
         assert status == 200 and body["speaker_name"]["name"] == "Host"
 
-        status, _, body = _get(server, f"/v1/episodes/{guid}")
+        status, _, body = _get(
+            server,
+            f"/v1/episodes/{guid}",
+            {"Authorization": "Bearer secret"},
+        )
         assert status == 200 and body["speaker_names"][0]["name"] == "Host"
 
         status, _, body = _request(

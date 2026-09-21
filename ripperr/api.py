@@ -200,10 +200,17 @@ class Ripperr:
             raise ValueError("speaker is required")
         if not name:
             raise ValueError("name is required")
+        if len(speaker) > 200 or len(name) > 200:
+            raise ValueError("speaker and name must be 200 characters or fewer")
         return self.store.set_speaker_name(ep.guid, speaker, name)
 
     def delete_speaker_name(self, ref: str | int, speaker: str) -> None:
-        self.store.delete_speaker_name(self._episode(ref).guid, speaker.strip())
+        speaker = speaker.strip()
+        if not speaker:
+            raise ValueError("speaker is required")
+        if len(speaker) > 200:
+            raise ValueError("speaker must be 200 characters or fewer")
+        self.store.delete_speaker_name(self._episode(ref).guid, speaker)
 
     def search(self, query: str, limit: int = 20) -> list[Hit]:
         return self.store.search(query, limit)

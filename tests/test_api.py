@@ -67,20 +67,85 @@ def test_guid_and_local_id_both_address_an_episode(tmp_path):
     assert rip.episode("nope") is None and rip.transcript("nope") is None
 
 
-def test_speaker_names_are_episode_scoped_and_leave_turns_raw(tmp_path):
+def test_speaker_names_are_episode_scoped_and_leave_turns_raw(tmp_path, monkeypatch):
     rip, guid = make(tmp_path)
     rip.remerge(guid, glossary=[])
     assert rip.speaker_names(guid) == []
 
+    before = rip.episode(guid)
+    monkeypatch.setattr("ripperr.store._now", lambda: "2026-09-21T12:00:00+00:00")
     mapping = rip.set_speaker_name(guid, "SPEAKER_01", "Matt Harmon")
     assert (mapping.speaker, mapping.name, mapping.method) == (
         "SPEAKER_01", "Matt Harmon", "manual"
     )
+    after = rip.episode(guid)
+    assert after.updated_at == "2026-09-21T12:00:00+00:00"
+    assert after.revision == before.revision
+    assert rip.changes()[-1].revision == before.revision
     transcript = rip.transcript(guid)
     assert transcript.turns[0].speaker == "SPEAKER_01"
     assert transcript.speaker_names == [mapping]
 
     rip.delete_speaker_name(guid, "SPEAKER_01")
+    assert rip.speaker_names(guid) == []
+    rip.close()
+
+
+def test_speaker_names_require_a_current_turn_label(tmp_path):
+    rip, guid = make(tmp_path)
+    with pytest.raises(ValueError, match="unknown speaker"):
+        rip.set_speaker_name(guid, "SPEAKER_99", "Nobody")
+    rip.close()
+
+
+def test_diarization_recompute_clears_speaker_names(tmp_path, monkeypatch):
+    rip, guid = make(tmp_path)
+    rip.remerge(guid, glossary=[])
+    rip.set_speaker_name(guid, "SPEAKER_01", "Host")
+    rip.store.set_status(1, "new")
+    rip.cfg.raw_path(guid, "diar").unlink()
+
+    proc = Processor(rip.cfg, lambda _: None)
+    proc._diarizer = type(
+        "D", (), {"run": lambda self, wav: [{"start": 0, "end": 2, "speaker": "SPEAKER_00"}]}
+    )()
+    monkeypatch.setattr(proc, "_ensure_audio", lambda store, episode: Path("x.wav"))
+    proc.process(rip.store, rip.episode(guid))
+
+    assert rip.speaker_names(guid) == []
+    assert rip.transcript(guid).turns[0].speaker == "SPEAKER_00"
+    rip.close()
+
+
+def test_failed_merge_then_retry_uses_new_diarization_key(tmp_path, monkeypatch):
+    rip, guid = make(tmp_path)
+    rip.remerge(guid, glossary=[])
+    rip.set_speaker_name(guid, "SPEAKER_01", "Host")
+    rip.store.set_status(1, "new")
+    rip.cfg.raw_path(guid, "diar").unlink()
+
+    proc = Processor(rip.cfg, lambda _: None)
+    proc._diarizer = type(
+        "D", (), {"run": lambda self, wav: [{"start": 0, "end": 2, "speaker": "SPEAKER_00"}]}
+    )()
+    monkeypatch.setattr(proc, "_ensure_audio", lambda store, episode: Path("x.wav"))
+    monkeypatch.setattr(pipeline, "merge_and_save", lambda *args: (_ for _ in ()).throw(RuntimeError("boom")))
+    proc.process(rip.store, rip.episode(guid))
+    assert rip.speaker_names(guid)[0].name == "Host"
+
+    monkeypatch.undo()
+    proc = Processor(rip.cfg, lambda _: None)
+    monkeypatch.setattr(proc, "_ensure_audio", lambda store, episode: Path("x.wav"))
+    proc.process(rip.store, rip.episode(guid))
+    assert rip.speaker_names(guid) == []
+    rip.close()
+
+
+def test_replacing_turns_prunes_names_for_missing_labels(tmp_path):
+    rip, guid = make(tmp_path)
+    rip.remerge(guid, glossary=[])
+    rip.set_speaker_name(guid, "SPEAKER_01", "Host")
+    rip.store.replace_turns(1, [Turn(0, "SPEAKER_00", 0, 1, "hello")])
     assert rip.speaker_names(guid) == []
     rip.close()
 
@@ -224,7 +289,7 @@ def test_old_database_is_migrated(tmp_path):
     assert store.add_episode(1, "g", "T", None, "a") is False  # not duplicated on the next sync
     assert store.add_episode(1, "new", "N", None, "b") is True
     assert store.episode(public_guid("u", "new")).source_guid == "new"
-    assert store.conn.execute("PRAGMA user_version").fetchone()[0] == 5
+    assert store.conn.execute("PRAGMA user_version").fetchone()[0] == 6
 
 
 def test_current_schema_skips_migration_on_reopen(tmp_path, monkeypatch):
@@ -259,7 +324,7 @@ def test_schema_migrates_old_change_constraint(tmp_path):
     store = Store(db)
     Store._insert_change(store.conn, "episode", 1, "deleted")
     assert store.changes()[0].kind == "deleted"
-    assert store.conn.execute("PRAGMA user_version").fetchone()[0] == 5
+    assert store.conn.execute("PRAGMA user_version").fetchone()[0] == 6
     store.close()
 
 
@@ -286,7 +351,7 @@ def test_v2_deleted_events_seed_tombstones(tmp_path):
     assert store.conn.execute(
         "SELECT revision FROM episode_tombstones WHERE guid = 'episode'"
     ).fetchone()[0] == 3
-    assert store.conn.execute("PRAGMA user_version").fetchone()[0] == 5
+    assert store.conn.execute("PRAGMA user_version").fetchone()[0] == 6
     store.close()
 
 

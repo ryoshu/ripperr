@@ -6,6 +6,7 @@ tweak skips the expensive model passes.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import tempfile
@@ -19,6 +20,11 @@ from .models import Correction, Episode, Turn
 from .store import STATUS_DOWNLOADED, STATUS_ERROR, Store
 
 Log = Callable[[str], None]
+
+
+def _diarization_key(segments: list[dict[str, Any]]) -> str:
+    payload = json.dumps(segments, sort_keys=True, separators=(",", ":")).encode()
+    return hashlib.sha256(payload).hexdigest()
 
 
 def sync_feeds(store: Store, log: Log = print) -> int:
@@ -109,7 +115,12 @@ def merge_and_save(
 
     merged = merge.merge(words, segments, cfg.max_turn_gap, cfg.orphan_word_gap)
     turns = [Turn(i, t["speaker"], t["start"], t["end"], t["text"]) for i, t in enumerate(merged)]
-    store.replace_turns(episode.id, turns, corrections)  # also marks the episode done
+    store.replace_turns(
+        episode.id,
+        turns,
+        corrections,
+        diarization_key=_diarization_key(segments),
+    )  # also marks the episode done
     return len(turns), len(words)
 
 
@@ -151,7 +162,13 @@ class Processor:
             segments = self._ensure_diarization(episode, wav, force)
 
             n_turns, n_words = merge_and_save(
-                store, self.cfg, episode, asr_result, segments, self.terms, self.log
+                store,
+                self.cfg,
+                episode,
+                asr_result,
+                segments,
+                self.terms,
+                self.log,
             )
         except Exception as exc:  # noqa: BLE001
             self.log(f"  ! failed: {exc}")

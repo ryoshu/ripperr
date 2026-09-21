@@ -213,17 +213,8 @@ def make_handler(cfg: Config, token: str | None = None):
             _json(self, {"deleted": feed_id})
 
         def _speaker_payload(self) -> str:
-            try:
-                length = int(self.headers.get("Content-Length", "0"))
-            except ValueError as exc:
-                raise ValueError("invalid content length") from exc
-            if length <= 0 or length > 16_384:
-                raise ValueError("request body must be between 1 and 16384 bytes")
-            try:
-                body = json.loads(self.rfile.read(length))
-            except (json.JSONDecodeError, UnicodeDecodeError) as exc:
-                raise ValueError("request body must be JSON") from exc
-            if not isinstance(body, dict) or not isinstance(body.get("name"), str):
+            body = self._json_body()
+            if not isinstance(body.get("name"), str):
                 raise ValueError("name is required")
             name = body["name"].strip()
             if not name:
@@ -231,19 +222,7 @@ def make_handler(cfg: Config, token: str | None = None):
             return name
 
         def _feed_payload(self) -> tuple[str, str | None]:
-            try:
-                length = int(self.headers.get("Content-Length", "0"))
-            except ValueError as exc:
-                raise ValueError("invalid content length") from exc
-            if length <= 0 or length > 16_384:
-                raise ValueError("request body must be between 1 and 16384 bytes")
-            try:
-                body = json.loads(self.rfile.read(length))
-            except (json.JSONDecodeError, UnicodeDecodeError) as exc:
-                raise ValueError("request body must be JSON") from exc
-            if not isinstance(body, dict):
-                raise ValueError("request body must be an object")
-
+            body = self._json_body()
             url = body.get("url")
             if not isinstance(url, str) or not url.strip():
                 raise ValueError("url is required")
@@ -276,6 +255,21 @@ def make_handler(cfg: Config, token: str | None = None):
                 raise ValueError("title must be a string")
             title = title.strip() if title else None
             return url, title
+
+        def _json_body(self) -> dict[str, object]:
+            try:
+                length = int(self.headers.get("Content-Length", "0"))
+            except ValueError as exc:
+                raise ValueError("invalid content length") from exc
+            if length <= 0 or length > 16_384:
+                raise ValueError("request body must be between 1 and 16384 bytes")
+            try:
+                body = json.loads(self.rfile.read(length))
+            except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+                raise ValueError("request body must be JSON") from exc
+            if not isinstance(body, dict):
+                raise ValueError("request body must be an object")
+            return body
 
     return Handler
 

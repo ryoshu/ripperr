@@ -54,9 +54,9 @@ were the feed's own ids.
 | --- | --- |
 | `episode(ref) -> Episode \| None` | `None` if unknown. |
 | `episodes(*, status=None, updated_since=None, after=0, limit=None) -> list[Episode]` | In id order. `updated_since` is an ISO 8601 UTC timestamp and is **inclusive**. `after` is an exclusive local-id cursor; `limit` caps the returned page. |
-| `transcript(ref) -> Transcript \| None` | The episode, its turns in `idx` order, and the glossary corrections applied to this revision. `None` if unknown. An episode that is not done normally has no turns. |
+| `transcript(ref) -> Transcript \| None` | The episode, its turns in `idx` order, glossary corrections applied to this revision, and episode-scoped speaker names. `None` if unknown. An episode that is not done normally has no turns. |
 | `speaker_names(ref) -> list[SpeakerName]` | Episode-scoped display names for raw diarization labels. |
-| `set_speaker_name(ref, speaker, name) -> SpeakerName` | Stores a manual display name without changing the raw transcript turn labels. |
+| `set_speaker_name(ref, speaker, name) -> SpeakerName` | Stores a manual display name without changing the raw transcript turn labels. `speaker` must occur in the episode's current turns; otherwise it raises `ValueError`. |
 | `delete_speaker_name(ref, speaker) -> None` | Removes an episode-scoped display name. |
 | `search(query, limit=20) -> list[Hit]` | Full-text search over turns, best match first. The query may use FTS5 syntax; if it is not valid FTS5 (for example `don't`), it is retried as a literal phrase. `Hit.snippet` marks matches with `[` and `]`. |
 | `stats() -> dict[str, int]` | Episode count per status. |
@@ -87,9 +87,11 @@ new ──▶ downloaded ──▶ done
 rewritten: after `process` finishes an episode, and after every `remerge`. Status
 changes, such as `new` to `downloaded`, and metadata refreshes from `sync` do not
 change it. `merged_at` is the time of the last rewrite. `updated_at` moves on any
-change, including processing bookkeeping and metadata refreshes. If an episode is
-deleted and later re-added with the same guid, its revision continues above the
-deleted revision rather than resetting.
+change, including processing bookkeeping, metadata refreshes, and speaker-name
+edits. Speaker-name change events keep the current revision; consumers should
+re-read the episode on every metadata event rather than using revision alone.
+If an episode is deleted and later re-added with the same guid, its revision
+continues above the deleted revision rather than resetting.
 
 Writing a transcript, bumping the revision, storing the corrections and marking the
 episode `done` (clearing `error`) happen in one transaction, so a failure part-way
@@ -112,8 +114,10 @@ continue to have monotonically increasing cursors.
 A change-feed consumer should:
 
 1. Call `changes(after=<last sequence>)`.
-2. For metadata or transcript events, re-read `episode_guid` and compare the
-   returned revision with the one it stored.
+2. For transcript events, re-read `episode_guid` and compare the returned
+   revision with the one it stored. For metadata events, always re-read the
+   episode because metadata can change while `revision` stays the same; an ETag
+   or `If-None-Match` check can avoid downloading an unchanged body.
 3. For transcript revisions, re-read `transcript(guid)` and replace whatever it
    derived from the old turns.
 4. Treat `deleted` events as removal notifications; the episode endpoint will
@@ -133,8 +137,8 @@ the shared log, so every other consumer replays them too; that is harmless becau
 they compare revisions, but avoid calling it repeatedly.
 
 Because `updated_since` is inclusive, the same episode can appear on consecutive
-polls; comparing revisions makes that harmless. Timestamps have second resolution,
-so rely on `revision` rather than on the time to detect changes.
+polls. Compare revisions for transcript changes; metadata events are authoritative
+even when the revision is unchanged. Timestamps have second resolution.
 
 A new revision changes `idx` values and can change turn text. Do not keep turn
 positions across revisions.
@@ -153,7 +157,16 @@ positions across revisions.
   and the episode stays `done`. When the source audio is deleted, `audio_path` is
   cleared (`None`); if deletion fails it is left set, because the file still exists.
 - Model output is cached, so re-processing after a merge change, a glossary change
-  or a crash skips the expensive steps. `force=True` ignores the cache.
+  or a crash skips the expensive steps. `force=True` ignores the cache. Names are
+  cleared when a rewrite is built from different diarization output than the
+  stored transcript, and are preserved when the output is identical. `remerge`
+  from the same cache therefore preserves them.
+- Episodes finished before schema v6 have no stored diarization key. Their first
+  rewrite records one without clearing existing names because there is nothing to
+  compare against.
+- The diarization key is an exact hash of the segments. A nondeterministic
+  diarizer can produce slightly different output on a rerun with the same
+  speakers, which clears names conservatively.
 - Cache files are written to a temporary file and renamed into place, so an
   interruption never leaves a partial file (a killed run can leave a stray `*.tmp`
   in `raw/`, which is safe to delete). A cache that can't be read is treated as
@@ -187,6 +200,10 @@ the turns. Matching rules and limits are in the README.
 - Speakers: labels like `SPEAKER_01` are per episode and mean nothing across
   episodes. `SpeakerName` mappings provide editable display names without
   rewriting transcript turns. `SPEAKER_?` means no speaker could be assigned.
+- `Hit.speaker` from `search()` is the raw per-episode diarization label; search
+  does not join `SpeakerName` mappings. The `show` CLI command applies mappings.
+- `SpeakerName.method` is currently `manual` and `confidence` is currently
+  `None`; other values are reserved for future attribution methods.
 - Models are frozen dataclasses (fields cannot be reassigned), and ripperr never
   modifies one after returning it.
 
@@ -227,6 +244,8 @@ returns `after` and `next_cursor`; fetch the emitted events with
 idempotently stored feed. `PUT /v1/feeds/{id}` replaces an existing feed's URL
 and title. `DELETE /v1/feeds/{id}` removes the feed, its stored episodes, and
 owned local audio/model-cache files.
+Deleting a feed also deletes its episode-scoped speaker names. Re-adding the same
+feed and episode restores the monotonic revision, but not those manual mappings.
 Authenticated feed management rejects local/private literal hosts as a typo and
 misconfiguration guard. It does not resolve DNS names or inspect redirect
 targets, so it is not complete SSRF protection. Direct RSS audio downloads are
@@ -240,9 +259,17 @@ episode metadata including the source `summary` when available, processing
 status, and revision information. It does not include transcript turns.
 
 `GET /v1/episodes/{guid}` returns feed metadata, public episode metadata,
-corrections, and ordered turns. It omits audio and host filesystem paths. The
-response has an ETag derived from the episode GUID and transcript revision and
+corrections, ordered turns, and `speaker_names` objects with `speaker`, `name`,
+`method`, `confidence`, and `updated_at`. It omits audio and host filesystem
+paths. The response has an ETag derived from the complete response body and
 returns `304 Not Modified` when `If-None-Match` matches.
+
+`PUT /v1/episodes/{guid}/speakers/{speaker}` requires the bearer token and
+accepts `{"name": "Display Name"}`. It returns the stored `speaker_name`.
+The speaker must occur in the episode's current transcript. `DELETE` on the
+same path removes the mapping and returns `{"deleted": "{speaker}"}`. Both
+operations leave raw turn labels and transcript `revision` unchanged, but emit
+a metadata change and update `updated_at`.
 
 `ripperr serve --emit-current` queues a transcript event for every completed
 episode, which is the one-time bootstrap operation for a new consumer.
