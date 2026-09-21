@@ -1,15 +1,15 @@
 [project]
 name = "ripperr"
 version = "0.1.0"
-description = "Apple Silicon native podcast download, transcription and diarization"
+description = "Local podcast download, transcription and diarization"
 requires-python = ">=3.11"
 
 dependencies = [
     "feedparser>=6.0",
     "requests>=2.31",
     "jellyfish>=1.0",  # metaphone keys for player-name matching
-    # mlx-whisper is macOS/Apple Silicon only; kept optional so the package can
-    # at least be imported elsewhere for testing the merge logic.
+    # Model runtimes stay optional so ingestion and transcript reads work on
+    # machines that do not have a local ML backend installed.
 ]
 
 [project.optional-dependencies]
@@ -25,6 +25,10 @@ apple = [
     # for reproducibility. To upgrade: bump the SHA (or switch to a release pin),
     # run a real episode, then run the tests. Senko needs Python < 3.14.
     "senko @ git+https://github.com/narcotic-sh/senko.git@1bcb09041bfa170b4a5a4b0af92f66eff76204d5",
+]
+linux = [
+    "faster-whisper>=1.1",
+    "pyannote.audio>=3.3",
 ]
 
 [project.scripts]

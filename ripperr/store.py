@@ -35,6 +35,7 @@ CREATE TABLE IF NOT EXISTS episodes (
     guid        TEXT NOT NULL UNIQUE,
     source_guid TEXT NOT NULL,
     title       TEXT,
+    summary     TEXT,
     published   TEXT,
     audio_url   TEXT NOT NULL,
     source_url  TEXT,
@@ -134,6 +135,7 @@ class Store:
         cols = {r["name"] for r in self.conn.execute("PRAGMA table_info(episodes)")}
         for name, ddl in (
             ("source_url", "TEXT"),
+            ("summary", "TEXT"),
             ("revision", "INTEGER NOT NULL DEFAULT 0"),
             ("merged_at", "TEXT"),
             ("source_guid", "TEXT"),
@@ -247,6 +249,7 @@ class Store:
         published: str | None,
         audio_url: str,
         source_url: str | None = None,
+        summary: str | None = None,
     ) -> bool:
         """Record an episode from a feed. Returns True if it was new.
 
@@ -257,7 +260,7 @@ class Store:
         """
         with self.tx() as c:
             row = c.execute(
-                "SELECT id, title, published, audio_url, source_url, guid, revision FROM episodes "
+                "SELECT id, title, summary, published, audio_url, source_url, guid, revision FROM episodes "
                 "WHERE feed_id = ? AND source_guid = ?",
                 (feed_id, source_guid),
             ).fetchone()
@@ -265,17 +268,18 @@ class Store:
                 feed_url = c.execute("SELECT url FROM feeds WHERE id = ?", (feed_id,)).fetchone()["url"]
                 c.execute(
                     """INSERT INTO episodes
-                       (feed_id, guid, source_guid, title, published, audio_url, source_url,
-                        status, updated_at)
-                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                       (feed_id, guid, source_guid, title, summary, published, audio_url,
+                        source_url, status, updated_at)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                     (feed_id, public_guid(feed_url, source_guid), source_guid, title,
-                     published, audio_url, source_url, STATUS_NEW, _now()),
+                     summary, published, audio_url, source_url, STATUS_NEW, _now()),
                 )
                 self._insert_change(c, public_guid(feed_url, source_guid), 0, "metadata")
                 return True
 
             new = {
                 "title": title,
+                "summary": summary,
                 "published": published,
                 "audio_url": audio_url,
                 "source_url": source_url,

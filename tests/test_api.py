@@ -87,7 +87,8 @@ def test_rss_published_is_iso_so_pending_is_newest_first(tmp_path):
     from ripperr.feeds import parse_feed
 
     def item(guid, date):
-        return (f'<item><guid>{guid}</guid><title>{guid}</title><pubDate>{date}</pubDate>'
+        return (f'<item><guid>{guid}</guid><title>{guid}</title><description>Summary {guid}</description>'
+                f'<pubDate>{date}</pubDate>'
                 f'<enclosure url="http://a/{guid}.mp3" type="audio/mpeg"/></item>')
 
     xml = ('<?xml version="1.0"?><rss version="2.0"><channel><title>T</title>'
@@ -95,6 +96,8 @@ def test_rss_published_is_iso_so_pending_is_newest_first(tmp_path):
            + item("newer", "Mon, 06 Jan 2025 08:00:00 GMT")
            + "</channel></rss>")
     _, episodes = parse_feed(xml)
+    assert {e["source_guid"]: e["summary"] for e in episodes} == {
+        "older": "Summary older", "newer": "Summary newer"}
     assert {e["source_guid"]: e["published"] for e in episodes} == {
         "older": "2025-01-01T08:00:00+00:00", "newer": "2025-01-06T08:00:00+00:00"}
 
@@ -163,6 +166,8 @@ def test_resync_refreshes_changed_metadata_but_keeps_state(tmp_path, monkeypatch
 
     store.add_episode(fid, "g", "New", None, "http://fixed")  # feed dropped the date
     assert store.episode_by_id(1).published == "2025-02-02T00:00:00+00:00"
+    store.add_episode(fid, "g", "New", None, "http://fixed", summary="A useful summary")
+    assert store.episode_by_id(1).summary == "A useful summary"
 
 
 def test_new_feed_starts_at_latest_and_follows_new_entries(tmp_path, monkeypatch):

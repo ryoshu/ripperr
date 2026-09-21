@@ -137,6 +137,12 @@ def make_handler(db_path: Path, token: str | None = None):
                 _json(self, {"feeds": [_feed_json(feed) for feed in store.feeds()]})
                 return
 
+            if parsed.path == "/v1/episodes":
+                _json(self, {
+                    "episodes": [_episode_json(store, episode) for episode in store.episodes()]
+                })
+                return
+
             prefix = "/v1/episodes/"
             if parsed.path.startswith(prefix) and parsed.path.count("/") == 3:
                 guid = unquote(parsed.path[len(prefix):])
@@ -147,22 +153,9 @@ def make_handler(db_path: Path, token: str | None = None):
                         status = HTTPStatus.NOT_FOUND
                         etag = None
                     else:
-                        feed = store.feed(episode.feed_id)
-                        body = {
-                            "guid": episode.guid,
-                            "source_guid": episode.source_guid,
-                            "feed": {"id": feed.id, "url": feed.url, "title": feed.title},
-                            "title": episode.title,
-                            "published": episode.published,
-                            "source_url": episode.source_url,
-                            "duration": episode.duration,
-                            "status": episode.status,
-                            "updated_at": episode.updated_at,
-                            "revision": episode.revision,
-                            "merged_at": episode.merged_at,
-                            "corrections": [c.__dict__ for c in store.corrections(episode.id)],
-                            "turns": [t.__dict__ for t in store.turns(episode.id)],
-                        }
+                        body = _episode_json(store, episode)
+                        body["corrections"] = [c.__dict__ for c in store.corrections(episode.id)]
+                        body["turns"] = [t.__dict__ for t in store.turns(episode.id)]
                         status = HTTPStatus.OK
                         etag = '"' + hashlib.sha256(json.dumps(
                             body, sort_keys=True, separators=(",", ":"), default=str
@@ -233,6 +226,24 @@ def make_handler(db_path: Path, token: str | None = None):
 
 def _feed_json(feed) -> dict[str, object]:
     return {"id": feed.id, "url": feed.url, "title": feed.title}
+
+
+def _episode_json(store: Store, episode) -> dict[str, object]:
+    feed = store.feed(episode.feed_id)
+    return {
+        "guid": episode.guid,
+        "source_guid": episode.source_guid,
+        "feed": _feed_json(feed),
+        "title": episode.title,
+        "summary": episode.summary,
+        "published": episode.published,
+        "source_url": episode.source_url,
+        "duration": episode.duration,
+        "status": episode.status,
+        "updated_at": episode.updated_at,
+        "revision": episode.revision,
+        "merged_at": episode.merged_at,
+    }
 
 
 def _feed_id(path: str) -> int:

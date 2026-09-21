@@ -40,7 +40,7 @@ were the feed's own ids.
 | --- | --- |
 | `add_feed(url) -> Feed` | Idempotent: adding a known URL returns the existing feed. The URL may be an RSS feed or a YouTube playlist. |
 | `feeds() -> list[Feed]` | In id order. |
-| `sync() -> int` | Polls every feed, records episodes not yet seen and returns how many were new. A new feed starts with only its newest episode; later syncs take only entries ahead of the newest known episode, so a historical playlist is not backfilled. For episodes already known it refreshes `title`, `published` and `audio_url` when the feed now gives a different value, so a corrected or re-hosted enclosure reaches the next retry; a value the feed no longer provides never erases the stored one. Status, audio, transcript and `revision` are untouched. A feed that fails to load is logged and skipped; `sync` does not raise for it. |
+| `sync() -> int` | Polls every feed, records episodes not yet seen and returns how many were new. A new feed starts with only its newest episode; later syncs take only entries ahead of the newest known episode, so a historical playlist is not backfilled. For episodes already known it refreshes `title`, `summary`, `published` and `audio_url` when the feed now gives a different value, so corrected metadata reaches the next retry; a value the feed no longer provides never erases the stored one. Status, audio, transcript and `revision` are untouched. A feed that fails to load is logged and skipped; `sync` does not raise for it. |
 | `process(limit=None, *, glossary=None, retry_errors=False, force=False) -> list[Episode]` | Downloads, transcribes, diarizes and merges pending episodes, then returns them as they now stand. See "Processing". |
 | `remerge(ref, *, glossary=None) -> Episode` | Redoes the glossary and merge steps from cached model output and returns the episode. Raises `LookupError` for an unknown episode and `FileNotFoundError` if it has no usable cached model output (missing, or unreadable). |
 
@@ -106,7 +106,7 @@ positions across revisions.
   no date (YouTube) by newest id. Dates are stored as ISO 8601 UTC.
 - `process` does not raise for a failing episode. It records the error on that
   episode, moves on, and returns it with status `error`. This includes a missing
-  ML dependency: without the `apple` extra every episode ends up `error`.
+  ML dependency: install the matching `apple` or `linux` extra for processing.
 - `glossary`: a list of terms. `None` reads the glossary file (`glossary.txt` under
   the data directory, or `RIPPERR_GLOSSARY`); `[]` turns the glossary off.
 - Only the work up to that transaction can mark an episode `error`. Once the
@@ -121,7 +121,7 @@ positions across revisions.
   missing and redone, not as an error.
 - The cache is keyed by episode only. Changing `RIPPERR_ASR_MODEL` or the language
   does not invalidate it; use `force=True` to redo the models.
-- Processing needs Apple Silicon. Reading does not (see below).
+- Processing needs a selected local model backend. Reading does not (see below).
 
 ## Glossary corrections
 
@@ -137,6 +137,7 @@ the turns. Matching rules and limits are in the README.
 - Timestamps (`updated_at`, `merged_at`): ISO 8601 UTC with second resolution, for
   example `2026-09-18T21:17:16+00:00`.
 - `Episode.published`: ISO 8601 UTC, or `None` if the feed gave no date.
+- `Episode.summary`: the source-provided RSS description or YouTube description, or `None` when unavailable. Ripperr does not generate summaries.
 - `Episode.source_url`: public RSS entry or YouTube watch URL for attribution; never a local path.
 - Speakers: labels like `SPEAKER_01` are per episode and mean nothing across
   episodes. `SPEAKER_?` means no speaker could be assigned.
@@ -179,6 +180,10 @@ Feed writes require `ripperr serve --token TOKEN`, and the caller must send
 `Authorization: Bearer TOKEN`; the server refuses feed writes when no token is
 configured.
 
+`GET /v1/episodes` returns the stored episodes with feed metadata, public
+episode metadata including the source `summary` when available, processing
+status, and revision information. It does not include transcript turns.
+
 `GET /v1/episodes/{guid}` returns feed metadata, public episode metadata,
 corrections, and ordered turns. It omits audio and host filesystem paths. The
 response has an ETag derived from the episode GUID and transcript revision and
@@ -190,5 +195,6 @@ episode, which is the one-time bootstrap operation for a new consumer.
 ## Dependencies
 
 Reading (`episodes`, `transcript`, `search`, `stats`, `remerge` from cache) needs
-only the base dependencies. Processing needs the `apple` extra, Senko, `ffmpeg`,
-and, for YouTube, the `youtube` extra.
+only the base dependencies. Processing needs `ffmpeg` plus either the `apple`
+extra (MLX/Senko) or the `linux` extra (faster-whisper/pyannote). YouTube also
+needs the `youtube` extra.

@@ -23,6 +23,7 @@ class Episode:
     source_guid: str  # the feed's own id for the episode; only unique within that feed
     feed_id: int
     title: str | None
+    summary: str | None
     published: str | None
     audio_url: str
     source_url: str | None  # public RSS entry or YouTube watch URL

@@ -59,6 +59,10 @@ def _source_url(entry) -> str | None:
     return None
 
 
+def _summary(entry) -> str | None:
+    return getattr(entry, "summary", None) or getattr(entry, "description", None)
+
+
 def parse_feed(url: str) -> tuple[str | None, list[dict]]:
     """Return (feed_title, episodes). Episodes are dicts, newest first as the
     feed presents them."""
@@ -83,6 +87,7 @@ def parse_feed(url: str) -> tuple[str | None, list[dict]]:
             {
                 "source_guid": str(guid),
                 "title": getattr(entry, "title", None),
+                "summary": _summary(entry),
                 "published": _published(entry),
                 "audio_url": audio_url,
                 "source_url": _source_url(entry),

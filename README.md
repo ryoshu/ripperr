@@ -1,34 +1,41 @@
 # ripperr
 
 Subscribe to podcast feeds (RSS or YouTube playlists), transcribe and diarize them
-locally on Apple Silicon, store everything in SQLite. No UI, no cloud, no CUDA.
+locally, store everything in SQLite, and keep model backends swappable. No UI or
+cloud service is required. Apple Silicon and Linux are supported.
 Meant to be used from Python (`ripperr.api.Ripperr`) as well as from the CLI.
 
 ```
-RSS / YouTube ──▶ download ──▶ ffmpeg 16k mono ──┬──▶ mlx-whisper (Metal) ──▶ words
-                                                 └──▶ Senko (CoreML)     ──▶ speaker segments
+RSS / YouTube ──▶ download ──▶ ffmpeg 16k mono ──┬──▶ ASR backend ──▶ words
+                                                 └──▶ diarization backend ──▶ speaker segments
                                                                                │
                         glossary respelling ──▶ merge by temporal overlap ◀────┘
                                                          │
                                                    SQLite + FTS5
 ```
 
-## Why these pieces
+## Architecture
 
-**mlx-whisper** runs Whisper on the Metal GPU. **Senko** is a tuned fork of the
+On Apple Silicon, **mlx-whisper** runs Whisper on the Metal GPU and **Senko** is a tuned fork of the
 3D-Speaker pipeline (pyannote segmentation-3.0 for VAD, CAM++ for embeddings,
 spectral or UMAP+HDBSCAN clustering) that runs both models through CoreML on
 macOS instead of PyTorch. Roughly an hour of audio diarized in single-digit
 seconds on an M3, versus minutes for pyannote on MPS.
+
+On Linux, `faster-whisper` provides ASR and `pyannote.audio` provides speaker
+diarization. The Linux diarization model is downloaded from Hugging Face and may
+require accepting the model terms and setting `RIPPERR_HF_TOKEN`.
 
 Both run on the same normalized 16 kHz mono WAV, so the conversion happens once.
 
 ## Setup
 
 ```bash
-brew install ffmpeg
+brew install ffmpeg                 # macOS
 uv venv --python 3.13 && source .venv/bin/activate
-uv pip install -e ".[apple]"    # mlx-whisper and Senko, pinned to a tested commit
+uv pip install -e ".[apple]"        # Apple Silicon
+# Linux: install ffmpeg with the system package manager, then use .[linux]
+# uv pip install -e ".[linux]"
 ```
 
 The `apple` extra installs Senko from a pinned git commit, the one this code was
@@ -36,8 +43,7 @@ tested against. Senko does have a PyPI release now (0.1.0), but its output shape
 changed between versions, so an exact pin is for reproducibility, not because
 packaging requires it. To upgrade, bump the SHA in `pyproject.toml` and re-run a real
 episode. Senko needs Python below 3.14, the Xcode Command Line Tools and macOS 14+.
-Unlike pyannote's own
-pipeline, no Hugging Face token or gated-model acceptance is required.
+Unlike pyannote's own pipeline, no Hugging Face token or gated-model acceptance is required.
 
 ## Usage
 
@@ -55,7 +61,12 @@ Settings come from the environment:
 | Variable | Effect |
 | --- | --- |
 | `RIPPERR_ROOT` | where the database, audio and cache live (default `~/ripperr`) |
-| `RIPPERR_ASR_MODEL` | Whisper model (default `mlx-community/whisper-large-v3-turbo`) |
+| `RIPPERR_ASR_BACKEND` | `auto`, `mlx`, or `faster-whisper` |
+| `RIPPERR_DIARIZATION_BACKEND` | `auto`, `senko`, or `pyannote` |
+| `RIPPERR_DEVICE` | `auto`, `cpu`, or `cuda` |
+| `RIPPERR_ASR_MODEL` | Whisper model (MLX default on Apple, `large-v3` on Linux) |
+| `RIPPERR_DIARIZATION_MODEL` | pyannote model (default `pyannote/speaker-diarization-community-1`) |
+| `RIPPERR_HF_TOKEN` | Hugging Face token for the Linux pyannote model |
 | `RIPPERR_LANGUAGE` | force a language instead of auto-detecting |
 | `RIPPERR_KEEP_AUDIO=0` | delete audio after processing |
 | `RIPPERR_GLOSSARY` | glossary file (default `<root>/glossary.txt`) |
@@ -110,7 +121,8 @@ compare revisions. The CLI is a client of this same class. The full contract,
 including errors, ordering and consistency, is in [docs/api.md](docs/api.md).
 
 Reading (`episodes`, `transcript`, `search`) needs only the base dependencies;
-processing needs the `apple` extra and Apple Silicon.
+processing needs the matching `apple` or `linux` extra. Linux can run on CPU or
+CUDA; set `RIPPERR_DEVICE=cuda` when the CUDA runtime is installed.
 
 ## Layout
 
@@ -123,26 +135,20 @@ processing needs the `apple` extra and Apple Silicon.
 | `youtube.py` | YouTube playlists, audio via yt-dlp |
 | `glossary.py` | phonetic respelling of names from a supplied term list |
 | `audio.py` | ffmpeg normalization to 16 kHz mono WAV |
-| `asr.py` | mlx-whisper, word-level timestamps |
-| `diarize.py` | Senko wrapper, segment normalization |
+| `asr.py` | ASR backends, word-level timestamp normalization |
+| `diarize.py` | diarization backends, segment normalization |
 | `merge.py` | word→speaker assignment, turn grouping |
 | `pipeline.py` | orchestration, per-stage caching |
 | `store.py` | SQLite schema, FTS5 search |
 
-## The merge stage
+See the [editable architecture diagram](docs/architecture.drawio).
 
-This is where transcript quality is actually won or lost, and it's the part most
-write-ups skip. Whisper and the diarizer segment the audio independently —
-Whisper follows linguistic units, the diarizer follows acoustic ones — and they
-disagree most at turn boundaries, which is exactly where errors are most visible.
+## The merge stage
 
 Each word is assigned to whichever speaker segment it overlaps most in time.
 Words overlapping nothing (breaths, VAD-clipped edges) inherit from a near
 neighbour. Runs of same-speaker words then collapse into turns, splitting on
 pauses longer than `max_turn_gap`.
-
-Word-level timestamps are load-bearing here. Segment-level assignment fails
-routinely, because a single Whisper segment often spans a speaker change.
 
 ## Caching and re-running
 
