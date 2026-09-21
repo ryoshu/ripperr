@@ -16,7 +16,6 @@ tell when it needs to re-read one.
 
 from __future__ import annotations
 
-import hashlib
 from pathlib import Path
 
 from .config import Config, default_config
@@ -24,6 +23,10 @@ from .glossary import load as load_glossary
 from .models import Episode, Feed, Hit, Transcript
 from .pipeline import Log, Processor, remerge, sync_feeds
 from .store import Store
+
+
+class ProcessingBusyError(RuntimeError):
+    """A destructive operation was attempted during model processing."""
 
 
 class Ripperr:
@@ -62,9 +65,12 @@ class Ripperr:
         return self.store.update_feed(feed_id, url, title)
 
     def delete_feed(self, feed_id: int) -> None:
-        episodes = self.store.delete_feed(feed_id)
-        for episode in episodes:
-            self._remove_episode_files(episode)
+        with self.store.processing_lock() as acquired:
+            if not acquired:
+                raise ProcessingBusyError("processing already running; retry later")
+            episodes = self.store.delete_feed(feed_id)
+            for episode in episodes:
+                self._remove_episode_files(episode)
 
     def sync(self) -> int:
         """Poll every feed and record new episodes. Returns how many were new."""
@@ -168,11 +174,11 @@ class Ripperr:
                 source.resolve().relative_to(audio_root)
             except ValueError:
                 source = None
-            if source is not None:
+            if source is not None and not self.store.audio_path_in_use(episode.audio_path):
                 self._unlink(source)
                 self._unlink(source.with_name(source.stem + ".16k.wav"))
 
-        cache_key = hashlib.sha1(episode.guid.encode()).hexdigest()[:12]
+        cache_key = self.cfg.episode_key(episode.guid)
         for path in self.cfg.raw_dir.glob(f"{cache_key}.*"):
             if path.is_file():
                 self._unlink(path)

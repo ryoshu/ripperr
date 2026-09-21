@@ -8,7 +8,7 @@ from pathlib import Path
 import pytest
 
 from ripperr import pipeline
-from ripperr.api import Ripperr
+from ripperr.api import ProcessingBusyError, Ripperr
 from ripperr.config import Config
 from ripperr.models import Turn
 from ripperr.pipeline import Processor, _read_cache, _write_cache
@@ -234,6 +234,42 @@ def test_delete_feed_emits_events_and_removes_owned_files(tmp_path):
 
     assert not source.exists() and not wav.exists() and not old_cache.exists()
     assert rip.changes()[-1]["kind"] == "deleted"
+    rip.close()
+
+
+def test_delete_feed_keeps_audio_shared_by_another_episode(tmp_path):
+    rip = Ripperr(Config(root=tmp_path), log=lambda _: None)
+    first = rip.add_feed("http://first")
+    second = rip.add_feed("http://second")
+    rip.store.add_episode(first.id, "one", "One", None, "http://audio")
+    rip.store.add_episode(second.id, "two", "Two", None, "http://audio")
+    episodes = {episode.source_guid: episode for episode in rip.episodes()}
+    source = rip.cfg.audio_dir / "shared.mp3"
+    wav = rip.cfg.audio_dir / "shared.16k.wav"
+    source.parent.mkdir(parents=True, exist_ok=True)
+    source.write_bytes(b"audio")
+    wav.write_bytes(b"wav")
+    for episode in episodes.values():
+        rip.store.set_status(episode.id, "downloaded", audio_path=str(source))
+
+    rip.delete_feed(first.id)
+    assert source.exists() and wav.exists()
+
+    rip.delete_feed(second.id)
+    assert not source.exists() and not wav.exists()
+    rip.close()
+
+
+def test_delete_feed_waits_for_processing_lock(tmp_path):
+    rip = Ripperr(Config(root=tmp_path), log=lambda _: None)
+    feed = rip.add_feed("http://feed")
+
+    with rip.store.processing_lock() as acquired:
+        assert acquired
+        with pytest.raises(ProcessingBusyError):
+            rip.delete_feed(feed.id)
+
+    assert rip.feed(feed.id) == feed
     rip.close()
 
 

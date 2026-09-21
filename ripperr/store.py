@@ -455,6 +455,11 @@ class Store:
                 (_now(), episode_id),
             )
 
+    def audio_path_in_use(self, audio_path: str) -> bool:
+        return self.conn.execute(
+            "SELECT 1 FROM episodes WHERE audio_path = ? LIMIT 1", (audio_path,)
+        ).fetchone() is not None
+
     # ---- transcripts -----------------------------------------------------
 
     def replace_turns(

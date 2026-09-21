@@ -116,12 +116,16 @@ class Config:
         """Cache path keyed by episode and the model configuration for the stage."""
         if kind not in {"asr", "diar"}:
             raise ValueError("cache kind must be asr or diar")
-        episode_key = hashlib.sha1(guid.encode()).hexdigest()[:12]
+        episode_key = self.episode_key(guid)
         config = self._cache_config(kind)
         config_key = hashlib.sha256(json.dumps(
             config, sort_keys=True, separators=(",", ":")
         ).encode()).hexdigest()[:12]
         return self.raw_dir / f"{episode_key}.{kind}-{config_key}.json"
+
+    @staticmethod
+    def episode_key(guid: str) -> str:
+        return hashlib.sha1(guid.encode()).hexdigest()[:12]
 
     def _cache_config(self, kind: str) -> dict[str, object]:
         if kind == "asr":

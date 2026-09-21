@@ -11,7 +11,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, unquote, urlparse
 
-from .api import Ripperr
+from .api import ProcessingBusyError, Ripperr
 from .config import Config, default_config
 from .store import Store
 
@@ -108,6 +108,8 @@ def make_handler(db_path: Path, token: str | None = None, cfg: Config | None = N
                     rip.close()
             except LookupError as exc:
                 _json(self, {"error": str(exc)}, HTTPStatus.NOT_FOUND)
+            except ProcessingBusyError as exc:
+                _json(self, {"error": str(exc)}, HTTPStatus.CONFLICT)
             except ValueError as exc:
                 _json(self, {"error": str(exc)}, HTTPStatus.BAD_REQUEST)
             except Exception:  # noqa: BLE001 - never leak a traceback or host path over HTTP
