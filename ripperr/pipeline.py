@@ -22,7 +22,12 @@ Log = Callable[[str], None]
 
 
 def sync_feeds(store: Store, log: Log = print) -> int:
-    """Poll every feed, record episodes we haven't seen. Returns new count."""
+    """Poll every feed and record episodes we haven't seen.
+
+    Feeds are expected to present newest entries first. For an existing feed,
+    only entries before the first known guid are imported; this avoids silently
+    backfilling an entire historical feed when a sync cursor is first created.
+    """
     total = 0
     for feed in store.feeds():
         try:

@@ -283,6 +283,23 @@ def test_new_feed_starts_at_latest_and_follows_new_entries(tmp_path, monkeypatch
     assert [episode.source_guid for episode in rip.episodes()] == ["newest", "newer"]
 
 
+def test_sync_does_not_backfill_entries_after_first_known_guid(tmp_path, monkeypatch):
+    feeds = [[
+        {"source_guid": "newest", "title": "Newest", "published": None, "audio_url": "a"},
+    ], [
+        {"source_guid": "newer", "title": "Newer", "published": None, "audio_url": "b"},
+        {"source_guid": "newest", "title": "Newest", "published": None, "audio_url": "a"},
+        {"source_guid": "historical", "title": "Historical", "published": None, "audio_url": "c"},
+    ]]
+    monkeypatch.setattr("ripperr.feeds.parse_feed", lambda _: ("Show", feeds.pop(0)))
+
+    rip = Ripperr(Config(root=tmp_path), log=lambda _: None)
+    rip.add_feed("http://feed")
+    assert rip.sync() == 1
+    assert rip.sync() == 1
+    assert [episode.source_guid for episode in rip.episodes()] == ["newest", "newer"]
+
+
 # ---- cache durability ------------------------------------------------------
 
 
