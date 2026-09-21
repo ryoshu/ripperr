@@ -152,11 +152,12 @@ pauses longer than `max_turn_gap`.
 
 ## Caching and re-running
 
-ASR and diarization output are written to `raw/<hash of guid>.{asr,diar}.json`
+ASR and diarization output are written to configuration-keyed files under `raw/`
 before merging. `ripperr remerge <id>` redoes only the glossary and merge steps
 from that cache, so you can tune `max_turn_gap`, the orphan-word logic or the
-glossary across a whole archive in seconds. `ripperr run --force` ignores the
-cache and re-runs the models.
+glossary across a whole archive in seconds. Changing a model backend, model,
+device, or language selects a fresh cache; `ripperr run --force` replaces the
+current one.
 
 ## Known rough edges
 

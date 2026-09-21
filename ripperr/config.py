@@ -7,10 +7,21 @@ an external drive without editing code.
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 import platform
 from dataclasses import dataclass, field
+from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
+
+_CACHE_FORMAT_VERSION = 2
+
+
+def _runtime_version(package: str) -> str | None:
+    try:
+        return version(package)
+    except PackageNotFoundError:
+        return None
 
 
 def _env_path(name: str, default: Path) -> Path:
@@ -82,9 +93,39 @@ class Config:
         return self.root / "raw"
 
     def raw_path(self, guid: str, kind: str) -> Path:
-        """Cache file for one stage's output (kind is "asr" or "diar"). Keyed by a
-        hash of the guid rather than a database id, so it survives a storage swap."""
-        return self.raw_dir / f"{hashlib.sha1(guid.encode()).hexdigest()[:12]}.{kind}.json"
+        """Cache path keyed by episode and the model configuration for the stage."""
+        if kind not in {"asr", "diar"}:
+            raise ValueError("cache kind must be asr or diar")
+        episode_key = hashlib.sha1(guid.encode()).hexdigest()[:12]
+        config = self._cache_config(kind)
+        config_key = hashlib.sha256(json.dumps(
+            config, sort_keys=True, separators=(",", ":")
+        ).encode()).hexdigest()[:12]
+        return self.raw_dir / f"{episode_key}.{kind}-{config_key}.json"
+
+    def _cache_config(self, kind: str) -> dict[str, object]:
+        from . import asr, diarize
+
+        if kind == "asr":
+            backend = asr.backend_name(self.asr_backend)
+            return {
+                "version": _CACHE_FORMAT_VERSION,
+                "backend": backend,
+                "runtime": _runtime_version(
+                    "mlx-whisper" if backend == "mlx" else "faster-whisper"
+                ),
+                "model": self.asr_model,
+                "device": self.device,
+                "language": self.language,
+            }
+        backend = diarize.backend_name(self.diarization_backend)
+        return {
+            "version": _CACHE_FORMAT_VERSION,
+            "backend": backend,
+            "runtime": _runtime_version("senko" if backend == "senko" else "pyannote-audio"),
+            "model": self.diarization_model,
+            "device": self.device,
+        }
 
     def ensure_dirs(self) -> None:
         for d in (self.root, self.audio_dir, self.raw_dir):

@@ -119,8 +119,10 @@ positions across revisions.
   interruption never leaves a partial file (a killed run can leave a stray `*.tmp`
   in `raw/`, which is safe to delete). A cache that can't be read is treated as
   missing and redone, not as an error.
-- The cache is keyed by episode only. Changing `RIPPERR_ASR_MODEL` or the language
-  does not invalidate it; use `force=True` to redo the models.
+- ASR and diarization caches are keyed by episode and the relevant backend,
+  runtime version, model, device, language, and cache format. Changing those
+  settings selects a new cache automatically; use `force=True` to replace the
+  current cache.
 - Processing needs a selected local model backend. Reading does not (see below).
 
 ## Glossary corrections

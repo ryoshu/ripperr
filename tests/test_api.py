@@ -206,6 +206,17 @@ def test_truncated_caches_are_misses_and_get_rewritten(tmp_path, monkeypatch):
     assert _read_cache(cfg.raw_path(guid, "diar")) is not None
 
 
+def test_model_cache_changes_with_backend_configuration(tmp_path):
+    guid = "episode"
+    asr_a = Config(root=tmp_path, asr_backend="mlx", asr_model="model-a")
+    asr_b = Config(root=tmp_path, asr_backend="faster-whisper", asr_model="model-a")
+    diar_a = Config(root=tmp_path, diarization_backend="senko")
+    diar_b = Config(root=tmp_path, diarization_backend="pyannote")
+
+    assert asr_a.raw_path(guid, "asr") != asr_b.raw_path(guid, "asr")
+    assert diar_a.raw_path(guid, "diar") != diar_b.raw_path(guid, "diar")
+
+
 def test_remerge_with_unreadable_cache_says_so(tmp_path):
     rip, guid = make(tmp_path)
     rip.cfg.raw_path(guid, "diar").write_text("[")
