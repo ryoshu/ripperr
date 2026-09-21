@@ -74,7 +74,7 @@ def _request(server, method, path, body=None, headers=None):
 
 
 def test_transcript_and_metadata_events_are_transactional(tmp_path):
-    store = Store(tmp_path / "r.db")
+    store = Store(tmp_path / "ripperr.db")
     feed = store.add_feed("https://feed")
     assert store.add_episode(feed.id, "one", "One", None, "https://audio", "https://show/one")
     episode = store.episode_by_id(1)
@@ -93,7 +93,7 @@ def test_transcript_and_metadata_events_are_transactional(tmp_path):
 
 
 def test_server_change_feed_and_revision_etag(tmp_path):
-    db = tmp_path / "r.db"
+    db = tmp_path / "ripperr.db"
     store = Store(db)
     feed = store.add_feed("https://feed", "Show")
     store.add_episode(feed.id, "one", "One", None, "https://audio", "https://show/one")
@@ -123,7 +123,7 @@ def test_server_change_feed_and_revision_etag(tmp_path):
 
 
 def test_pruned_change_cursor_requires_rebootstrap(tmp_path):
-    db = tmp_path / "r.db"
+    db = tmp_path / "ripperr.db"
     store = Store(db)
     feed = store.add_feed("https://feed")
     store.add_episode(feed.id, "one", "One", None, "https://audio")
@@ -141,7 +141,7 @@ def test_pruned_change_cursor_requires_rebootstrap(tmp_path):
 
 
 def test_episode_list_returns_feed_metadata(tmp_path):
-    db = tmp_path / "r.db"
+    db = tmp_path / "ripperr.db"
     store = Store(db)
     feed = store.add_feed("https://feed", "Show")
     store.add_episode(feed.id, "one", "One", None, "https://audio", "https://show/one")
@@ -174,7 +174,7 @@ def test_episode_list_returns_feed_metadata(tmp_path):
 
 
 def test_non_loopback_handler_requires_token(tmp_path):
-    db = tmp_path / "r.db"
+    db = tmp_path / "ripperr.db"
     Store(db).close()
     server, thread = _server(db, "secret")
     try:
@@ -188,7 +188,7 @@ def test_non_loopback_handler_requires_token(tmp_path):
 
 
 def test_feed_management_lists_and_adds_with_token(tmp_path):
-    db = tmp_path / "r.db"
+    db = tmp_path / "ripperr.db"
     Store(db).close()
     server, thread = _server(db, "secret")
     try:
@@ -213,7 +213,7 @@ def test_feed_management_lists_and_adds_with_token(tmp_path):
 
 
 def test_feed_management_updates_and_deletes_with_token(tmp_path):
-    db = tmp_path / "r.db"
+    db = tmp_path / "ripperr.db"
     store = Store(db)
     store.add_feed("https://example.com/feed.xml", "Example")
     store.close()
@@ -249,7 +249,7 @@ def test_feed_management_updates_and_deletes_with_token(tmp_path):
 
 
 def test_feed_management_requires_token_even_on_loopback(tmp_path):
-    db = tmp_path / "r.db"
+    db = tmp_path / "ripperr.db"
     Store(db).close()
     server, thread = _server(db)
     try:
@@ -261,7 +261,7 @@ def test_feed_management_requires_token_even_on_loopback(tmp_path):
 
 
 def test_feed_management_rejects_private_hosts(tmp_path):
-    db = tmp_path / "r.db"
+    db = tmp_path / "ripperr.db"
     Store(db).close()
     server, thread = _server(db, "secret")
     try:
@@ -278,7 +278,7 @@ def test_feed_management_rejects_private_hosts(tmp_path):
 
 
 def test_episode_etag_tracks_episode_feed_and_transcript_metadata(tmp_path):
-    db = tmp_path / "r.db"
+    db = tmp_path / "ripperr.db"
     store = Store(db)
     feed = store.add_feed("https://feed", "Show")
     store.add_episode(feed.id, "one", "One", None, "https://audio", "https://show/one")
@@ -325,7 +325,7 @@ def test_episode_etag_tracks_episode_feed_and_transcript_metadata(tmp_path):
 
 
 def test_episode_response_uses_one_snapshot(tmp_path, monkeypatch):
-    db = tmp_path / "r.db"
+    db = tmp_path / "ripperr.db"
     store = Store(db)
     feed = store.add_feed("https://feed", "Show")
     store.add_episode(feed.id, "one", "One", None, "https://audio", "https://show/one")
