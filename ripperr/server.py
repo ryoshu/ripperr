@@ -151,6 +151,7 @@ def make_handler(cfg: Config, token: str | None = None):
                     )
                     body["corrections"] = [c.__dict__ for c in transcript.corrections]
                     body["turns"] = [t.__dict__ for t in transcript.turns]
+                    body["speaker_names"] = [_speaker_json(name) for name in transcript.speaker_names]
                     status = HTTPStatus.OK
                     etag = '"' + hashlib.sha256(json.dumps(
                         body, sort_keys=True, separators=(",", ":"), default=str
@@ -188,15 +189,46 @@ def make_handler(cfg: Config, token: str | None = None):
             _json(self, {"feed": _feed_json(feed)}, HTTPStatus.CREATED)
 
         def _put(self, rip: Ripperr, parsed) -> None:
+            if parsed.path.startswith("/v1/episodes/") and "/speakers/" in parsed.path:
+                guid, speaker = _speaker_path(parsed.path)
+                name = self._speaker_payload()
+                mapping = rip.set_speaker_name(guid, speaker, name)
+                _json(self, {"speaker_name": _speaker_json(mapping)})
+                return
+
             feed_id = _feed_id(parsed.path)
             url, title = self._feed_payload()
             feed = rip.update_feed(feed_id, url, title)
             _json(self, {"feed": _feed_json(feed)})
 
         def _delete(self, rip: Ripperr, parsed) -> None:
+            if parsed.path.startswith("/v1/episodes/") and "/speakers/" in parsed.path:
+                guid, speaker = _speaker_path(parsed.path)
+                rip.delete_speaker_name(guid, speaker)
+                _json(self, {"deleted": speaker})
+                return
+
             feed_id = _feed_id(parsed.path)
             rip.delete_feed(feed_id)
             _json(self, {"deleted": feed_id})
+
+        def _speaker_payload(self) -> str:
+            try:
+                length = int(self.headers.get("Content-Length", "0"))
+            except ValueError as exc:
+                raise ValueError("invalid content length") from exc
+            if length <= 0 or length > 16_384:
+                raise ValueError("request body must be between 1 and 16384 bytes")
+            try:
+                body = json.loads(self.rfile.read(length))
+            except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+                raise ValueError("request body must be JSON") from exc
+            if not isinstance(body, dict) or not isinstance(body.get("name"), str):
+                raise ValueError("name is required")
+            name = body["name"].strip()
+            if not name:
+                raise ValueError("name is required")
+            return name
 
         def _feed_payload(self) -> tuple[str, str | None]:
             try:
@@ -269,6 +301,17 @@ def _episode_json(episode, feed) -> dict[str, object]:
     }
 
 
+def _speaker_json(mapping) -> dict[str, object]:
+    return {
+        "episode_guid": mapping.episode_guid,
+        "speaker": mapping.speaker,
+        "name": mapping.name,
+        "method": mapping.method,
+        "confidence": mapping.confidence,
+        "updated_at": mapping.updated_at,
+    }
+
+
 def _change_json(change) -> dict[str, object]:
     return {
         "seq": change.seq,
@@ -290,6 +333,17 @@ def _feed_id(path: str) -> int:
     if feed_id < 1:
         raise ValueError("feed id must be positive")
     return feed_id
+
+
+def _speaker_path(path: str) -> tuple[str, str]:
+    prefix = "/v1/episodes/"
+    marker = "/speakers/"
+    if not path.startswith(prefix) or marker not in path:
+        raise ValueError("speaker path must include an episode and speaker")
+    guid, speaker = path[len(prefix):].split(marker, 1)
+    if not guid or not speaker or "/" in speaker:
+        raise ValueError("speaker path must include an episode and speaker")
+    return unquote(guid), unquote(speaker)
 
 
 def _integer(query, name: str, default: int, minimum: int, maximum: int | None = None) -> int:

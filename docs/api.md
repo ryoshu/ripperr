@@ -55,6 +55,9 @@ were the feed's own ids.
 | `episode(ref) -> Episode \| None` | `None` if unknown. |
 | `episodes(*, status=None, updated_since=None, after=0, limit=None) -> list[Episode]` | In id order. `updated_since` is an ISO 8601 UTC timestamp and is **inclusive**. `after` is an exclusive local-id cursor; `limit` caps the returned page. |
 | `transcript(ref) -> Transcript \| None` | The episode, its turns in `idx` order, and the glossary corrections applied to this revision. `None` if unknown. An episode that is not done normally has no turns. |
+| `speaker_names(ref) -> list[SpeakerName]` | Episode-scoped display names for raw diarization labels. |
+| `set_speaker_name(ref, speaker, name) -> SpeakerName` | Stores a manual display name without changing the raw transcript turn labels. |
+| `delete_speaker_name(ref, speaker) -> None` | Removes an episode-scoped display name. |
 | `search(query, limit=20) -> list[Hit]` | Full-text search over turns, best match first. The query may use FTS5 syntax; if it is not valid FTS5 (for example `don't`), it is retried as a literal phrase. `Hit.snippet` marks matches with `[` and `]`. |
 | `stats() -> dict[str, int]` | Episode count per status. |
 | `change_seq() -> int` | Highest committed change-feed sequence number. |
@@ -182,7 +185,8 @@ the turns. Matching rules and limits are in the README.
 - `Episode.summary`: the source-provided RSS description or YouTube description, or `None` when unavailable. Ripperr does not generate summaries.
 - `Episode.source_url`: public RSS entry or YouTube watch URL for attribution; never a local path.
 - Speakers: labels like `SPEAKER_01` are per episode and mean nothing across
-  episodes. `SPEAKER_?` means no speaker could be assigned.
+  episodes. `SpeakerName` mappings provide editable display names without
+  rewriting transcript turns. `SPEAKER_?` means no speaker could be assigned.
 - Models are frozen dataclasses (fields cannot be reassigned), and ripperr never
   modifies one after returning it.
 

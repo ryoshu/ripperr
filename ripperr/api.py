@@ -21,7 +21,7 @@ from pathlib import Path
 
 from .config import Config, default_config
 from .glossary import load as load_glossary
-from .models import Change, Episode, Feed, Hit, Transcript
+from .models import Change, Episode, Feed, Hit, SpeakerName, Transcript
 from .pipeline import Log, Processor, remerge, sync_feeds
 from .store import Store
 
@@ -182,7 +182,28 @@ class Ripperr:
             ep = self.episode(ref)
             if ep is None:
                 return None
-            return Transcript(ep, self.store.turns(ep.id), self.store.corrections(ep.id))
+            return Transcript(
+                ep,
+                self.store.turns(ep.id),
+                self.store.corrections(ep.id),
+                self.store.speaker_names(ep.guid),
+            )
+
+    def speaker_names(self, ref: str | int) -> list[SpeakerName]:
+        return self.store.speaker_names(self._episode(ref).guid)
+
+    def set_speaker_name(self, ref: str | int, speaker: str, name: str) -> SpeakerName:
+        ep = self._episode(ref)
+        speaker = speaker.strip()
+        name = name.strip()
+        if not speaker:
+            raise ValueError("speaker is required")
+        if not name:
+            raise ValueError("name is required")
+        return self.store.set_speaker_name(ep.guid, speaker, name)
+
+    def delete_speaker_name(self, ref: str | int, speaker: str) -> None:
+        self.store.delete_speaker_name(self._episode(ref).guid, speaker.strip())
 
     def search(self, query: str, limit: int = 20) -> list[Hit]:
         return self.store.search(query, limit)

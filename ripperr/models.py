@@ -6,7 +6,7 @@ service) don't change if the storage backend does.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 
 @dataclass(frozen=True)
@@ -53,6 +53,16 @@ class Correction:
 
 
 @dataclass(frozen=True)
+class SpeakerName:
+    episode_guid: str
+    speaker: str
+    name: str
+    method: str  # manual | voice_match | transcript_hint
+    confidence: float | None
+    updated_at: str  # ISO 8601 UTC
+
+
+@dataclass(frozen=True)
 class Hit:
     episode_id: int
     guid: str
@@ -68,6 +78,7 @@ class Transcript:
     episode: Episode
     turns: list[Turn]
     corrections: list[Correction]  # glossary swaps applied to this revision
+    speaker_names: list[SpeakerName] = field(default_factory=list)
 
 
 @dataclass(frozen=True)

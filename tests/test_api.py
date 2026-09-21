@@ -67,6 +67,24 @@ def test_guid_and_local_id_both_address_an_episode(tmp_path):
     assert rip.episode("nope") is None and rip.transcript("nope") is None
 
 
+def test_speaker_names_are_episode_scoped_and_leave_turns_raw(tmp_path):
+    rip, guid = make(tmp_path)
+    rip.remerge(guid, glossary=[])
+    assert rip.speaker_names(guid) == []
+
+    mapping = rip.set_speaker_name(guid, "SPEAKER_01", "Matt Harmon")
+    assert (mapping.speaker, mapping.name, mapping.method) == (
+        "SPEAKER_01", "Matt Harmon", "manual"
+    )
+    transcript = rip.transcript(guid)
+    assert transcript.turns[0].speaker == "SPEAKER_01"
+    assert transcript.speaker_names == [mapping]
+
+    rip.delete_speaker_name(guid, "SPEAKER_01")
+    assert rip.speaker_names(guid) == []
+    rip.close()
+
+
 def test_episodes_filters_by_status_and_update_time(tmp_path):
     rip, guid = make(tmp_path)
     assert rip.episodes(status="done") == []
@@ -206,7 +224,7 @@ def test_old_database_is_migrated(tmp_path):
     assert store.add_episode(1, "g", "T", None, "a") is False  # not duplicated on the next sync
     assert store.add_episode(1, "new", "N", None, "b") is True
     assert store.episode(public_guid("u", "new")).source_guid == "new"
-    assert store.conn.execute("PRAGMA user_version").fetchone()[0] == 4
+    assert store.conn.execute("PRAGMA user_version").fetchone()[0] == 5
 
 
 def test_current_schema_skips_migration_on_reopen(tmp_path, monkeypatch):
@@ -241,7 +259,7 @@ def test_schema_migrates_old_change_constraint(tmp_path):
     store = Store(db)
     Store._insert_change(store.conn, "episode", 1, "deleted")
     assert store.changes()[0].kind == "deleted"
-    assert store.conn.execute("PRAGMA user_version").fetchone()[0] == 4
+    assert store.conn.execute("PRAGMA user_version").fetchone()[0] == 5
     store.close()
 
 
@@ -268,7 +286,7 @@ def test_v2_deleted_events_seed_tombstones(tmp_path):
     assert store.conn.execute(
         "SELECT revision FROM episode_tombstones WHERE guid = 'episode'"
     ).fetchone()[0] == 3
-    assert store.conn.execute("PRAGMA user_version").fetchone()[0] == 4
+    assert store.conn.execute("PRAGMA user_version").fetchone()[0] == 5
     store.close()
 
 

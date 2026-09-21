@@ -392,6 +392,40 @@ def test_episode_response_uses_one_snapshot(tmp_path, monkeypatch):
         thread.join()
 
 
+def test_episode_speaker_names_can_be_managed_with_token(tmp_path):
+    db = tmp_path / "ripperr.db"
+    store = Store(db)
+    feed = store.add_feed("https://feed")
+    store.add_episode(feed.id, "one", "One", None, "https://audio")
+    guid = store.episode_by_id(1).guid
+    store.close()
+
+    server, thread = _server(db, "secret")
+    try:
+        status, _, body = _request(
+            server,
+            "PUT",
+            f"/v1/episodes/{guid}/speakers/SPEAKER_00",
+            {"name": "Host"},
+            {"Authorization": "Bearer secret"},
+        )
+        assert status == 200 and body["speaker_name"]["name"] == "Host"
+
+        status, _, body = _get(server, f"/v1/episodes/{guid}")
+        assert status == 200 and body["speaker_names"][0]["name"] == "Host"
+
+        status, _, body = _request(
+            server,
+            "DELETE",
+            f"/v1/episodes/{guid}/speakers/SPEAKER_00",
+            headers={"Authorization": "Bearer secret"},
+        )
+        assert status == 200 and body == {"deleted": "SPEAKER_00"}
+    finally:
+        server.shutdown()
+        thread.join()
+
+
 def test_serve_rejects_plaintext_remote_bind(tmp_path):
     with pytest.raises(ValueError, match="TLS reverse proxy or tunnel"):
         serve(Config(root=tmp_path), host="0.0.0.0", token="secret")

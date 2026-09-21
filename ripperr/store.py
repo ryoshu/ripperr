@@ -17,9 +17,9 @@ from email.utils import parsedate_to_datetime
 from pathlib import Path
 from typing import Iterator, Sequence
 
-from .models import Change, Correction, Episode, Feed, Hit, Turn
+from .models import Change, Correction, Episode, Feed, Hit, SpeakerName, Turn
 
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS feeds (
@@ -70,6 +70,16 @@ INSERT OR IGNORE INTO change_state (id, pruned_through) VALUES (1, 0);
 CREATE TABLE IF NOT EXISTS episode_tombstones (
     guid     TEXT PRIMARY KEY,
     revision INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS speaker_names (
+    episode_guid TEXT NOT NULL REFERENCES episodes(guid) ON DELETE CASCADE,
+    speaker      TEXT NOT NULL,
+    name         TEXT NOT NULL,
+    method       TEXT NOT NULL DEFAULT 'manual',
+    confidence   REAL,
+    updated_at   TEXT NOT NULL,
+    PRIMARY KEY (episode_guid, speaker)
 );
 
 CREATE TABLE IF NOT EXISTS turns (
@@ -475,6 +485,64 @@ class Store:
         return self.conn.execute(
             "SELECT 1 FROM episodes WHERE audio_path = ? LIMIT 1", (audio_path,)
         ).fetchone() is not None
+
+    def speaker_names(self, episode_guid: str) -> list[SpeakerName]:
+        rows = self.conn.execute(
+            "SELECT episode_guid, speaker, name, method, confidence, updated_at "
+            "FROM speaker_names WHERE episode_guid = ? ORDER BY speaker",
+            (episode_guid,),
+        )
+        return [SpeakerName(**dict(row)) for row in rows]
+
+    def set_speaker_name(
+        self,
+        episode_guid: str,
+        speaker: str,
+        name: str,
+        *,
+        method: str = "manual",
+        confidence: float | None = None,
+    ) -> SpeakerName:
+        with self.tx() as c:
+            episode = c.execute(
+                "SELECT revision FROM episodes WHERE guid = ?", (episode_guid,)
+            ).fetchone()
+            if episode is None:
+                raise LookupError(f"no episode {episode_guid}")
+            existing = c.execute(
+                "SELECT name, method, confidence FROM speaker_names "
+                "WHERE episode_guid = ? AND speaker = ?",
+                (episode_guid, speaker),
+            ).fetchone()
+            if existing is None or tuple(existing) != (name, method, confidence):
+                now = _now()
+                c.execute(
+                    """INSERT INTO speaker_names
+                       (episode_guid, speaker, name, method, confidence, updated_at)
+                       VALUES (?, ?, ?, ?, ?, ?)
+                       ON CONFLICT(episode_guid, speaker) DO UPDATE SET
+                         name = excluded.name,
+                         method = excluded.method,
+                         confidence = excluded.confidence,
+                         updated_at = excluded.updated_at""",
+                    (episode_guid, speaker, name, method, confidence, now),
+                )
+                self._insert_change(c, episode_guid, episode["revision"], "metadata")
+        return next(mapping for mapping in self.speaker_names(episode_guid) if mapping.speaker == speaker)
+
+    def delete_speaker_name(self, episode_guid: str, speaker: str) -> None:
+        with self.tx() as c:
+            episode = c.execute(
+                "SELECT revision FROM episodes WHERE guid = ?", (episode_guid,)
+            ).fetchone()
+            if episode is None:
+                raise LookupError(f"no episode {episode_guid}")
+            deleted = c.execute(
+                "DELETE FROM speaker_names WHERE episode_guid = ? AND speaker = ?",
+                (episode_guid, speaker),
+            ).rowcount
+            if deleted:
+                self._insert_change(c, episode_guid, episode["revision"], "metadata")
 
     # ---- transcripts -----------------------------------------------------
 
