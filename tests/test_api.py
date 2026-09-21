@@ -175,7 +175,7 @@ def test_old_database_is_migrated(tmp_path):
     assert store.add_episode(1, "g", "T", None, "a") is False  # not duplicated on the next sync
     assert store.add_episode(1, "new", "N", None, "b") is True
     assert store.episode(public_guid("u", "new")).source_guid == "new"
-    assert store.conn.execute("PRAGMA user_version").fetchone()[0] == 2
+    assert store.conn.execute("PRAGMA user_version").fetchone()[0] == 3
 
 
 def test_current_schema_skips_migration_on_reopen(tmp_path, monkeypatch):
@@ -210,7 +210,7 @@ def test_schema_migrates_old_change_constraint(tmp_path):
     store = Store(db)
     Store._insert_change(store.conn, "episode", 1, "deleted")
     assert store.changes()[0]["kind"] == "deleted"
-    assert store.conn.execute("PRAGMA user_version").fetchone()[0] == 2
+    assert store.conn.execute("PRAGMA user_version").fetchone()[0] == 3
     store.close()
 
 
@@ -234,6 +234,24 @@ def test_delete_feed_emits_events_and_removes_owned_files(tmp_path):
 
     assert not source.exists() and not wav.exists() and not old_cache.exists()
     assert rip.changes()[-1]["kind"] == "deleted"
+    rip.close()
+
+
+def test_readding_deleted_episode_keeps_revision_monotonic(tmp_path):
+    rip = Ripperr(Config(root=tmp_path), log=lambda _: None)
+    feed = rip.add_feed("http://feed")
+    rip.store.add_episode(feed.id, "one", "One", None, "http://audio")
+    episode = rip.episodes()[0]
+    rip.store.replace_turns(episode.id, [Turn(0, "S", 0, 1, "hello")])
+    guid = episode.guid
+
+    rip.delete_feed(feed.id)
+    readded_feed = rip.add_feed("http://feed")
+    rip.store.add_episode(readded_feed.id, "one", "One again", None, "http://audio")
+
+    readded = rip.episode(guid)
+    assert readded.revision == 2
+    assert [event["revision"] for event in rip.changes()] == [0, 1, 1, 2]
     rip.close()
 
 

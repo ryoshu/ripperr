@@ -19,7 +19,7 @@ from typing import Iterator, Sequence
 
 from .models import Correction, Episode, Feed, Hit, Turn
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS feeds (
@@ -59,6 +59,11 @@ CREATE TABLE IF NOT EXISTS changes (
 );
 
 CREATE INDEX IF NOT EXISTS idx_changes_seq ON changes(seq);
+
+CREATE TABLE IF NOT EXISTS episode_tombstones (
+    guid     TEXT PRIMARY KEY,
+    revision INTEGER NOT NULL
+);
 
 CREATE TABLE IF NOT EXISTS turns (
     id          INTEGER PRIMARY KEY,
@@ -288,6 +293,11 @@ class Store:
                 raise LookupError(f"no feed {feed_id}")
             rows = c.execute("SELECT * FROM episodes WHERE feed_id = ?", (feed_id,)).fetchall()
             for row in rows:
+                c.execute(
+                    "INSERT INTO episode_tombstones (guid, revision) VALUES (?, ?) "
+                    "ON CONFLICT(guid) DO UPDATE SET revision = MAX(revision, excluded.revision)",
+                    (row["guid"], row["revision"]),
+                )
                 self._insert_change(c, row["guid"], row["revision"], "deleted")
             episode_ids = [row["id"] for row in rows]
             if episode_ids:
@@ -322,15 +332,20 @@ class Store:
             ).fetchone()
             if row is None:
                 feed_url = c.execute("SELECT url FROM feeds WHERE id = ?", (feed_id,)).fetchone()["url"]
+                guid = public_guid(feed_url, source_guid)
+                tombstone = c.execute(
+                    "SELECT revision FROM episode_tombstones WHERE guid = ?", (guid,)
+                ).fetchone()
+                revision = tombstone["revision"] + 1 if tombstone else 0
                 c.execute(
                     """INSERT INTO episodes
                        (feed_id, guid, source_guid, title, summary, published, audio_url,
-                        source_url, status, updated_at)
-                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                    (feed_id, public_guid(feed_url, source_guid), source_guid, title,
-                     summary, published, audio_url, source_url, STATUS_NEW, _now()),
+                        source_url, status, updated_at, revision)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    (feed_id, guid, source_guid, title, summary, published, audio_url,
+                     source_url, STATUS_NEW, _now(), revision),
                 )
-                self._insert_change(c, public_guid(feed_url, source_guid), 0, "metadata")
+                self._insert_change(c, guid, revision, "metadata")
                 return True
 
             new = {

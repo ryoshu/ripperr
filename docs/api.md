@@ -81,7 +81,9 @@ new ──▶ downloaded ──▶ done
 rewritten: after `process` finishes an episode, and after every `remerge`. Status
 changes, such as `new` to `downloaded`, and metadata refreshes from `sync` do not
 change it. `merged_at` is the time of the last rewrite. `updated_at` moves on any
-change, including processing bookkeeping and metadata refreshes.
+change, including processing bookkeeping and metadata refreshes. If an episode is
+deleted and later re-added with the same guid, its revision continues above the
+deleted revision rather than resetting.
 
 Writing a transcript, bumping the revision, storing the corrections and marking the
 episode `done` (clearing `error`) happen in one transaction, so a failure part-way
