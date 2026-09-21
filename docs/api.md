@@ -59,7 +59,7 @@ were the feed's own ids.
 | `stats() -> dict[str, int]` | Episode count per status. |
 | `change_seq() -> int` | Highest committed change-feed sequence number. |
 | `changes(after=0, limit=100) -> list[Change]` | Returns cursor-based transcript and metadata change events in ascending sequence order. |
-| `prune_changes(through) -> int` | Deletes events through an acknowledged sequence number and returns the number removed. This invalidates cursors at or before `through`, so call it only after every consumer has advanced past them. |
+| `prune_changes(through) -> int` | Deletes events through an acknowledged sequence number and returns the number removed. A later read with an older cursor raises `ChangeLogPrunedError`, so call it only after every consumer has advanced past it. |
 | `emit_current() -> int` | Queues the current revision of every completed episode for a new consumer's bootstrap. |
 
 ## Episode lifecycle
@@ -115,6 +115,10 @@ A change-feed consumer should:
    derived from the old turns.
 4. Treat `deleted` events as removal notifications; the episode endpoint will
    return 404 afterward.
+
+If a consumer asks for a cursor older than the retained log, the Python API
+raises `ChangeLogPrunedError`; HTTP clients receive `410 Gone` with `reset: true`.
+Re-bootstrap with `emit_current()` before polling again.
 
 Because `updated_since` is inclusive, the same episode can appear on consecutive
 polls; comparing revisions makes that harmless. Timestamps have second resolution,

@@ -8,7 +8,7 @@ from pathlib import Path
 import pytest
 
 from ripperr import pipeline
-from ripperr.api import ProcessingBusyError, Ripperr
+from ripperr.api import ChangeLogPrunedError, ProcessingBusyError, Ripperr
 from ripperr.config import Config
 from ripperr.models import Turn
 from ripperr.pipeline import Processor, _read_cache, _write_cache
@@ -92,7 +92,12 @@ def test_prune_changes_requires_acknowledged_cursor_and_keeps_sequence_monotonic
     assert rip.change_seq() == 1
 
     assert rip.prune_changes(1) == 1
-    assert rip.changes() == []
+    rip.close()
+    rip = Ripperr(Config(root=tmp_path), log=lambda _: None)
+    with pytest.raises(ChangeLogPrunedError) as exc:
+        rip.changes()
+    assert exc.value.pruned_through == 1
+    assert rip.changes(after=1) == []
     assert rip.change_seq() == 1
 
     rip.store.add_episode(feed.id, "two", "Two", None, "http://audio/two")
@@ -201,7 +206,7 @@ def test_old_database_is_migrated(tmp_path):
     assert store.add_episode(1, "g", "T", None, "a") is False  # not duplicated on the next sync
     assert store.add_episode(1, "new", "N", None, "b") is True
     assert store.episode(public_guid("u", "new")).source_guid == "new"
-    assert store.conn.execute("PRAGMA user_version").fetchone()[0] == 3
+    assert store.conn.execute("PRAGMA user_version").fetchone()[0] == 4
 
 
 def test_current_schema_skips_migration_on_reopen(tmp_path, monkeypatch):
@@ -236,7 +241,34 @@ def test_schema_migrates_old_change_constraint(tmp_path):
     store = Store(db)
     Store._insert_change(store.conn, "episode", 1, "deleted")
     assert store.changes()[0].kind == "deleted"
-    assert store.conn.execute("PRAGMA user_version").fetchone()[0] == 3
+    assert store.conn.execute("PRAGMA user_version").fetchone()[0] == 4
+    store.close()
+
+
+def test_v2_deleted_events_seed_tombstones(tmp_path):
+    db = tmp_path / "v2.db"
+    conn = sqlite3.connect(db)
+    conn.executescript(
+        """
+        CREATE TABLE changes (
+            seq INTEGER PRIMARY KEY AUTOINCREMENT,
+            episode_guid TEXT NOT NULL,
+            revision INTEGER NOT NULL,
+            kind TEXT NOT NULL CHECK (kind IN ('transcript', 'metadata', 'deleted')),
+            occurred_at TEXT NOT NULL
+        );
+        INSERT INTO changes VALUES (7, 'episode', 3, 'deleted', 't');
+        PRAGMA user_version = 2;
+        """
+    )
+    conn.commit()
+    conn.close()
+
+    store = Store(db)
+    assert store.conn.execute(
+        "SELECT revision FROM episode_tombstones WHERE guid = 'episode'"
+    ).fetchone()[0] == 3
+    assert store.conn.execute("PRAGMA user_version").fetchone()[0] == 4
     store.close()
 
 

@@ -107,7 +107,7 @@ def cmd_remerge(args, rip: Ripperr) -> int:
 def cmd_serve(args, rip: Ripperr) -> int:
     from .server import serve
 
-    serve(rip.cfg.db_path, args.host, args.port, args.token, args.emit_current, rip.cfg)
+    serve(rip.cfg, args.host, args.port, args.token, args.emit_current)
     return 0
 
 

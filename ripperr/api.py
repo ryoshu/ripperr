@@ -33,6 +33,16 @@ class ProcessingBusyError(RuntimeError):
     """A destructive operation was attempted during model processing."""
 
 
+class ChangeLogPrunedError(RuntimeError):
+    """A consumer cursor is older than the retained change log."""
+
+    def __init__(self, pruned_through: int):
+        self.pruned_through = pruned_through
+        super().__init__(
+            f"change log was pruned through sequence {pruned_through}; re-bootstrap required"
+        )
+
+
 class Ripperr:
     def __init__(self, cfg: Config | None = None, *, store: Store | None = None, log: Log = print):
         self.cfg = cfg or default_config()
@@ -184,6 +194,9 @@ class Ripperr:
         return self.store.highest_change_seq()
 
     def changes(self, after: int = 0, limit: int = 100) -> list[Change]:
+        pruned_through = self.store.pruned_through()
+        if after < pruned_through:
+            raise ChangeLogPrunedError(pruned_through)
         return self.store.changes(after, limit)
 
     def prune_changes(self, through: int) -> int:

@@ -56,6 +56,10 @@ ripperr search "interest rates"
 ripperr status
 ```
 
+Maintenance operations such as `prune_changes()` and `prune_cache()` are
+available through the Python API only; the CLI does not expose destructive
+cleanup commands.
+
 Settings come from the environment:
 
 | Variable | Effect |

@@ -7,18 +7,27 @@ from urllib.request import Request, urlopen
 import pytest
 
 from ripperr.models import Turn
+from ripperr.config import Config
 from ripperr.server import make_handler, serve
 from ripperr.store import Store
 
 
 def _server(db, token=None):
     try:
-        server = ThreadingHTTPServer(("127.0.0.1", 0), make_handler(db, token))
+        server = ThreadingHTTPServer(
+            ("127.0.0.1", 0), make_handler(Config(root=db.parent), token)
+        )
     except PermissionError:
         pytest.skip("the test sandbox does not permit binding a local socket")
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     return server, thread
+
+
+def test_make_handler_does_not_mutate_config(tmp_path):
+    cfg = Config(root=tmp_path / "configured")
+    make_handler(cfg)
+    assert cfg.root == tmp_path / "configured"
 
 
 def _get(server, path, headers=None):
@@ -108,6 +117,24 @@ def test_server_change_feed_and_revision_etag(tmp_path):
             server, f"/v1/episodes/{ep.guid}", {"If-None-Match": headers["ETag"]})
         assert status == 304 and body is None
         assert unchanged_headers["ETag"] == headers["ETag"]
+    finally:
+        server.shutdown()
+        thread.join()
+
+
+def test_pruned_change_cursor_requires_rebootstrap(tmp_path):
+    db = tmp_path / "r.db"
+    store = Store(db)
+    feed = store.add_feed("https://feed")
+    store.add_episode(feed.id, "one", "One", None, "https://audio")
+    assert store.prune_changes(1) == 1
+    store.close()
+
+    server, thread = _server(db)
+    try:
+        status, _, body = _get(server, "/v1/changes?after=0")
+        assert status == 410
+        assert body["reset"] is True and body["pruned_through"] == 1
     finally:
         server.shutdown()
         thread.join()
@@ -335,4 +362,4 @@ def test_episode_response_uses_one_snapshot(tmp_path, monkeypatch):
 
 def test_serve_rejects_plaintext_remote_bind(tmp_path):
     with pytest.raises(ValueError, match="TLS reverse proxy or tunnel"):
-        serve(tmp_path / "r.db", host="0.0.0.0", token="secret")
+        serve(Config(root=tmp_path), host="0.0.0.0", token="secret")

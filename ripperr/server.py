@@ -8,12 +8,10 @@ import ipaddress
 import json
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from pathlib import Path
 from urllib.parse import parse_qs, unquote, urlparse
 
-from .api import ProcessingBusyError, Ripperr
-from .config import Config, default_config
-from .store import Store
+from .api import ChangeLogPrunedError, ProcessingBusyError, Ripperr
+from .config import Config
 
 
 def _loopback(host: str) -> bool:
@@ -36,12 +34,9 @@ def _json(handler: BaseHTTPRequestHandler, value: object, status: int = 200, hea
     handler.wfile.write(payload)
 
 
-def make_handler(db_path: Path, token: str | None = None, cfg: Config | None = None):
-    cfg = cfg or default_config()
-    cfg.root = db_path.parent
-
+def make_handler(cfg: Config, token: str | None = None):
     def open_ripperr() -> Ripperr:
-        return Ripperr(cfg, store=Store(db_path), log=lambda _: None)
+        return Ripperr(cfg, log=lambda _: None)
 
     class Handler(BaseHTTPRequestHandler):
         server_version = "ripperr/0.1"
@@ -75,6 +70,16 @@ def make_handler(db_path: Path, token: str | None = None, cfg: Config | None = N
                 _json(self, {"error": str(exc)}, HTTPStatus.NOT_FOUND)
             except ProcessingBusyError as exc:
                 _json(self, {"error": str(exc)}, HTTPStatus.CONFLICT)
+            except ChangeLogPrunedError as exc:
+                _json(
+                    self,
+                    {
+                        "error": str(exc),
+                        "reset": True,
+                        "pruned_through": exc.pruned_through,
+                    },
+                    HTTPStatus.GONE,
+                )
             except ValueError as exc:
                 _json(self, {"error": str(exc)}, HTTPStatus.BAD_REQUEST)
             except Exception:  # noqa: BLE001 - never leak a traceback or host path over HTTP
@@ -287,19 +292,16 @@ def _integer(query, name: str, default: int, minimum: int, maximum: int | None =
     return value
 
 
-def serve(db_path: Path, host: str = "127.0.0.1", port: int = 8765,
-          token: str | None = None, emit_current: bool = False,
-          cfg: Config | None = None) -> None:
+def serve(cfg: Config, host: str = "127.0.0.1", port: int = 8765,
+          token: str | None = None, emit_current: bool = False) -> None:
     if not _loopback(host):
         raise ValueError(
             "--host must be loopback; use a TLS reverse proxy or tunnel for remote consumers"
         )
-    cfg = cfg or default_config()
-    cfg.root = db_path.parent
     if emit_current:
         with Ripperr(cfg, log=lambda _: None) as rip:
             rip.emit_current()
-    server = ThreadingHTTPServer((host, port), make_handler(db_path, token, cfg))
+    server = ThreadingHTTPServer((host, port), make_handler(cfg, token))
     print(f"ripperr serving on http://{host}:{server.server_port}")
     try:
         server.serve_forever()

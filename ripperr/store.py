@@ -19,7 +19,7 @@ from typing import Iterator, Sequence
 
 from .models import Change, Correction, Episode, Feed, Hit, Turn
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS feeds (
@@ -59,6 +59,13 @@ CREATE TABLE IF NOT EXISTS changes (
 );
 
 CREATE INDEX IF NOT EXISTS idx_changes_seq ON changes(seq);
+
+CREATE TABLE IF NOT EXISTS change_state (
+    id             INTEGER PRIMARY KEY CHECK (id = 1),
+    pruned_through INTEGER NOT NULL DEFAULT 0
+);
+
+INSERT OR IGNORE INTO change_state (id, pruned_through) VALUES (1, 0);
 
 CREATE TABLE IF NOT EXISTS episode_tombstones (
     guid     TEXT PRIMARY KEY,
@@ -203,6 +210,15 @@ class Store:
                 self.conn.execute("DROP TABLE changes")
                 self.conn.execute("ALTER TABLE changes_v2 RENAME TO changes")
                 self.conn.execute("CREATE INDEX idx_changes_seq ON changes(seq)")
+
+        if version < 3:
+            self.conn.execute(
+                """INSERT INTO episode_tombstones (guid, revision)
+                   SELECT episode_guid, MAX(revision)
+                   FROM changes WHERE kind = 'deleted'
+                   GROUP BY episode_guid
+                   ON CONFLICT(guid) DO UPDATE SET revision = MAX(revision, excluded.revision)"""
+            )
 
     def close(self) -> None:
         self.conn.close()
@@ -541,7 +557,17 @@ class Store:
         if through < 0:
             raise ValueError("change sequence must be non-negative")
         with self.tx() as c:
+            c.execute(
+                "UPDATE change_state SET pruned_through = MAX(pruned_through, ?)",
+                (through,),
+            )
             return c.execute("DELETE FROM changes WHERE seq <= ?", (through,)).rowcount
+
+    def pruned_through(self) -> int:
+        row = self.conn.execute(
+            "SELECT pruned_through FROM change_state WHERE id = 1"
+        ).fetchone()
+        return int(row["pruned_through"])
 
     def emit_current(self) -> int:
         """Queue the current revision of every completed episode for bootstrap."""
