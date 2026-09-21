@@ -195,8 +195,10 @@ endpoint will no longer be available.
 idempotently stored feed. `PUT /v1/feeds/{id}` replaces an existing feed's URL
 and title. `DELETE /v1/feeds/{id}` removes the feed, its stored episodes, and
 owned local audio/model-cache files.
-Authenticated feed management rejects local/private literal hosts. Direct RSS
-audio downloads are capped at 1 GiB and incomplete files are removed on failure.
+Authenticated feed management rejects local/private literal hosts as a typo and
+misconfiguration guard. It does not resolve DNS names or inspect redirect
+targets, so it is not complete SSRF protection. Direct RSS audio downloads are
+capped at 1 GiB and incomplete files are removed on failure.
 Feed writes require `ripperr serve --token TOKEN`, and the caller must send
 `Authorization: Bearer TOKEN`; the server refuses feed writes when no token is
 configured.

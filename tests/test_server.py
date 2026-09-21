@@ -244,7 +244,7 @@ def test_feed_management_rejects_private_hosts(tmp_path):
             {"url": "http://127.0.0.1:8000/private.xml"},
             {"Authorization": "Bearer secret"},
         )
-        assert status == 400 and "publicly routable" in body["error"]
+        assert status == 400 and "local/private literal" in body["error"]
     finally:
         server.shutdown()
         thread.join()

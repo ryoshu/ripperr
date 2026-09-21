@@ -236,10 +236,12 @@ def make_handler(db_path: Path, token: str | None = None, cfg: Config | None = N
             parsed_url = urlparse(url)
             if parsed_url.scheme not in {"http", "https"} or not parsed_url.netloc:
                 raise ValueError("url must be an http or https URL")
+            # Defense-in-depth typo guard only: DNS answers and redirects are
+            # intentionally not inspected here.
             hostname = parsed_url.hostname
             hostname = hostname.lower().rstrip(".") if hostname else None
             if hostname is None or hostname == "localhost" or hostname.endswith(".local"):
-                raise ValueError("url host must be publicly routable")
+                raise ValueError("url host must not be a local/private literal address")
             try:
                 address = ipaddress.ip_address(hostname)
             except ValueError:
@@ -252,7 +254,7 @@ def make_handler(db_path: Path, token: str | None = None, cfg: Config | None = N
                 or address.is_multicast
                 or address.is_unspecified
             ):
-                raise ValueError("url host must be publicly routable")
+                raise ValueError("url host must not be a local/private literal address")
 
             title = body.get("title")
             if title is not None and not isinstance(title, str):
