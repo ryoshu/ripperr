@@ -176,13 +176,15 @@ available as defense in depth behind that trusted boundary.
 
 `GET /healthz` returns `ok` and the highest committed `change_seq`. `GET
 /v1/changes?after=SEQ&limit=N` returns ascending, cursor-based metadata and
-transcript events. The cursor is advanced by the last returned `seq`; callers
-may safely replay a page.
+transcript, and deleted events. The cursor is advanced by the last returned
+`seq`; callers may safely replay a page. A deleted event means the episode
+endpoint will no longer be available.
 
 `GET /v1/feeds` returns the registered feed ids, URLs and titles. `POST
 /v1/feeds` accepts `{"url": "https://…", "title": "…"}` and returns the
 idempotently stored feed. `PUT /v1/feeds/{id}` replaces an existing feed's URL
-and title. `DELETE /v1/feeds/{id}` removes the feed and its stored episodes.
+and title. `DELETE /v1/feeds/{id}` removes the feed, its stored episodes, and
+owned local audio/model-cache files.
 Authenticated feed management rejects local/private literal hosts. Direct RSS
 audio downloads are capped at 1 GiB and incomplete files are removed on failure.
 Feed writes require `ripperr serve --token TOKEN`, and the caller must send

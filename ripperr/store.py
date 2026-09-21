@@ -19,7 +19,7 @@ from typing import Iterator, Sequence
 
 from .models import Correction, Episode, Feed, Hit, Turn
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS feeds (
@@ -54,7 +54,7 @@ CREATE TABLE IF NOT EXISTS changes (
     seq          INTEGER PRIMARY KEY AUTOINCREMENT,
     episode_guid TEXT NOT NULL,
     revision     INTEGER NOT NULL,
-    kind         TEXT NOT NULL CHECK (kind IN ('transcript', 'metadata')),
+    kind         TEXT NOT NULL CHECK (kind IN ('transcript', 'metadata', 'deleted')),
     occurred_at  TEXT NOT NULL
 );
 
@@ -135,37 +135,60 @@ class Store:
         if version < SCHEMA_VERSION:
             self.conn.execute("PRAGMA journal_mode = WAL")
             self.conn.executescript(SCHEMA)
-            self._migrate()
+            self._migrate(version)
             self.conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
             self.conn.commit()
 
-    def _migrate(self) -> None:
+    def _migrate(self, version: int) -> None:
         """Bring a database created by an older version up to date."""
-        cols = {r["name"] for r in self.conn.execute("PRAGMA table_info(episodes)")}
-        for name, ddl in (
-            ("source_url", "TEXT"),
-            ("summary", "TEXT"),
-            ("revision", "INTEGER NOT NULL DEFAULT 0"),
-            ("merged_at", "TEXT"),
-            ("source_guid", "TEXT"),
-        ):
-            if name not in cols:
-                self.conn.execute(f"ALTER TABLE episodes ADD COLUMN {name} {ddl}")
-        # Before source_guid existed, `guid` was the feed's own id. Keep it as the
-        # public guid so existing caches and consumers keep working; only episodes
-        # added from now on get a derived one.
-        self.conn.execute("UPDATE episodes SET source_guid = guid WHERE source_guid IS NULL")
-        self.conn.execute(
-            "CREATE UNIQUE INDEX IF NOT EXISTS idx_episodes_feed_source "
-            "ON episodes(feed_id, source_guid)"
-        )
-        for row in self.conn.execute(
-            "SELECT id, published FROM episodes WHERE published IS NOT NULL"
-        ).fetchall():
-            published = _published_iso(row["published"])
-            if published != row["published"]:
-                self.conn.execute(
-                    "UPDATE episodes SET published = ? WHERE id = ?", (published, row["id"])
+        if version < 1:
+            cols = {r["name"] for r in self.conn.execute("PRAGMA table_info(episodes)")}
+            for name, ddl in (
+                ("source_url", "TEXT"),
+                ("summary", "TEXT"),
+                ("revision", "INTEGER NOT NULL DEFAULT 0"),
+                ("merged_at", "TEXT"),
+                ("source_guid", "TEXT"),
+            ):
+                if name not in cols:
+                    self.conn.execute(f"ALTER TABLE episodes ADD COLUMN {name} {ddl}")
+            # Before source_guid existed, `guid` was the feed's own id. Keep it as the
+            # public guid so existing caches and consumers keep working; only episodes
+            # added from now on get a derived one.
+            self.conn.execute("UPDATE episodes SET source_guid = guid WHERE source_guid IS NULL")
+            self.conn.execute(
+                "CREATE UNIQUE INDEX IF NOT EXISTS idx_episodes_feed_source "
+                "ON episodes(feed_id, source_guid)"
+            )
+            for row in self.conn.execute(
+                "SELECT id, published FROM episodes WHERE published IS NOT NULL"
+            ).fetchall():
+                published = _published_iso(row["published"])
+                if published != row["published"]:
+                    self.conn.execute(
+                        "UPDATE episodes SET published = ? WHERE id = ?", (published, row["id"])
+                    )
+
+        if version < 2:
+            table = self.conn.execute(
+                "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'changes'"
+            ).fetchone()
+            if table and "'deleted'" not in table["sql"]:
+                self.conn.executescript(
+                    """
+                    CREATE TABLE changes_v2 (
+                        seq          INTEGER PRIMARY KEY AUTOINCREMENT,
+                        episode_guid TEXT NOT NULL,
+                        revision     INTEGER NOT NULL,
+                        kind         TEXT NOT NULL CHECK (kind IN ('transcript', 'metadata', 'deleted')),
+                        occurred_at  TEXT NOT NULL
+                    );
+                    INSERT INTO changes_v2 SELECT * FROM changes;
+                    DROP INDEX IF EXISTS idx_changes_seq;
+                    DROP TABLE changes;
+                    ALTER TABLE changes_v2 RENAME TO changes;
+                    CREATE INDEX idx_changes_seq ON changes(seq);
+                    """
                 )
 
     def close(self) -> None:
@@ -259,17 +282,18 @@ class Store:
                     self._insert_change(c, row["guid"], row["revision"], "metadata")
         return self.feed(feed_id)
 
-    def delete_feed(self, feed_id: int) -> None:
+    def delete_feed(self, feed_id: int) -> list[Episode]:
         with self.tx() as c:
-            episode_ids = [
-                row["id"]
-                for row in c.execute("SELECT id FROM episodes WHERE feed_id = ?", (feed_id,))
-            ]
             if not c.execute("SELECT 1 FROM feeds WHERE id = ?", (feed_id,)).fetchone():
                 raise LookupError(f"no feed {feed_id}")
+            rows = c.execute("SELECT * FROM episodes WHERE feed_id = ?", (feed_id,)).fetchall()
+            for row in rows:
+                self._insert_change(c, row["guid"], row["revision"], "deleted")
+            episode_ids = [row["id"] for row in rows]
             if episode_ids:
                 c.executemany("DELETE FROM turns_fts WHERE episode_id = ?", [(i,) for i in episode_ids])
             c.execute("DELETE FROM feeds WHERE id = ?", (feed_id,))
+            return [_episode(row) for row in rows]
 
     # ---- episodes --------------------------------------------------------
 

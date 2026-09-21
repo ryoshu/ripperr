@@ -16,6 +16,9 @@ tell when it needs to re-read one.
 
 from __future__ import annotations
 
+import hashlib
+from pathlib import Path
+
 from .config import CONFIG, Config
 from .glossary import load as load_glossary
 from .models import Episode, Feed, Hit, Transcript
@@ -59,7 +62,9 @@ class Ripperr:
         return self.store.update_feed(feed_id, url, title)
 
     def delete_feed(self, feed_id: int) -> None:
-        self.store.delete_feed(feed_id)
+        episodes = self.store.delete_feed(feed_id)
+        for episode in episodes:
+            self._remove_episode_files(episode)
 
     def sync(self) -> int:
         """Poll every feed and record new episodes. Returns how many were new."""
@@ -154,3 +159,26 @@ class Ripperr:
 
     def _terms(self, glossary: list[str] | None) -> list[str]:
         return glossary if glossary is not None else load_glossary(self.cfg.glossary_path)
+
+    def _remove_episode_files(self, episode: Episode) -> None:
+        audio_root = self.cfg.audio_dir.resolve()
+        if episode.audio_path:
+            source = Path(episode.audio_path)
+            try:
+                source.resolve().relative_to(audio_root)
+            except ValueError:
+                source = None
+            if source is not None:
+                self._unlink(source)
+                self._unlink(source.with_name(source.stem + ".16k.wav"))
+
+        cache_key = hashlib.sha1(episode.guid.encode()).hexdigest()[:12]
+        for path in self.cfg.raw_dir.glob(f"{cache_key}.*"):
+            if path.is_file():
+                self._unlink(path)
+
+    def _unlink(self, path: Path) -> None:
+        try:
+            path.unlink(missing_ok=True)
+        except OSError as exc:
+            self.log(f"  ! could not remove {path.name}: {exc}")

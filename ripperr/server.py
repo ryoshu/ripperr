@@ -12,6 +12,7 @@ from pathlib import Path
 from urllib.parse import parse_qs, unquote, urlparse
 
 from .api import Ripperr
+from .config import Config
 from .store import Store
 
 
@@ -36,6 +37,11 @@ def _json(handler: BaseHTTPRequestHandler, value: object, status: int = 200, hea
 
 
 def make_handler(db_path: Path, token: str | None = None):
+    def open_ripperr() -> Ripperr:
+        return Ripperr(
+            Config(root=db_path.parent), store=Store(db_path), log=lambda _: None
+        )
+
     class Handler(BaseHTTPRequestHandler):
         server_version = "ripperr/0.1"
 
@@ -47,7 +53,7 @@ def make_handler(db_path: Path, token: str | None = None):
                 return
             parsed = urlparse(self.path)
             try:
-                rip = Ripperr(store=Store(db_path), log=lambda _: None)
+                rip = open_ripperr()
                 try:
                     self._get(rip, parsed)
                 finally:
@@ -62,7 +68,7 @@ def make_handler(db_path: Path, token: str | None = None):
                 return
             parsed = urlparse(self.path)
             try:
-                rip = Ripperr(store=Store(db_path), log=lambda _: None)
+                rip = open_ripperr()
                 try:
                     self._post(rip, parsed)
                 finally:
@@ -77,7 +83,7 @@ def make_handler(db_path: Path, token: str | None = None):
                 return
             parsed = urlparse(self.path)
             try:
-                rip = Ripperr(store=Store(db_path), log=lambda _: None)
+                rip = open_ripperr()
                 try:
                     self._put(rip, parsed)
                 finally:
@@ -94,7 +100,7 @@ def make_handler(db_path: Path, token: str | None = None):
                 return
             parsed = urlparse(self.path)
             try:
-                rip = Ripperr(store=Store(db_path), log=lambda _: None)
+                rip = open_ripperr()
                 try:
                     self._delete(rip, parsed)
                 finally:
