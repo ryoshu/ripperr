@@ -113,6 +113,38 @@ def test_server_change_feed_and_revision_etag(tmp_path):
         thread.join()
 
 
+def test_episode_list_returns_feed_metadata(tmp_path):
+    db = tmp_path / "r.db"
+    store = Store(db)
+    feed = store.add_feed("https://feed", "Show")
+    store.add_episode(feed.id, "one", "One", None, "https://audio", "https://show/one")
+    guid = store.episode_by_id(1).guid
+    store.close()
+
+    server, thread = _server(db, "secret")
+    try:
+        status, _, body = _get(server, "/v1/episodes", {"Authorization": "Bearer secret"})
+        assert status == 200
+        assert body["episodes"] == [{
+            "guid": guid,
+            "source_guid": "one",
+            "feed": {"id": 1, "url": "https://feed", "title": "Show"},
+            "title": "One",
+            "summary": None,
+            "published": None,
+            "source_url": "https://show/one",
+            "duration": None,
+            "status": "new",
+            "updated_at": body["episodes"][0]["updated_at"],
+            "revision": 0,
+            "merged_at": None,
+        }]
+        assert "turns" not in body["episodes"][0]
+    finally:
+        server.shutdown()
+        thread.join()
+
+
 def test_non_loopback_handler_requires_token(tmp_path):
     db = tmp_path / "r.db"
     Store(db).close()

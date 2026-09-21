@@ -39,13 +39,16 @@ def sync_feeds(store: Store, log: Log = print) -> int:
                 if episode["source_guid"] in known:
                     break
                 fresh.append(episode)
-            episodes = fresh
+            # Refresh metadata for all stored episodes too, so a newly available
+            # source summary reaches existing rows without importing the whole
+            # historical feed.
+            episodes = fresh + [episode for episode in episodes if episode["source_guid"] in known]
         else:
             episodes = episodes[:1]
         new = sum(
             store.add_episode(
                 feed.id, ep["source_guid"], ep["title"], ep["published"], ep["audio_url"],
-                ep.get("source_url"),
+                ep.get("source_url"), ep.get("summary"),
             )
             # oldest first, so ids rise with recency even for feeds without dates
             for ep in reversed(episodes)
@@ -123,7 +126,14 @@ class Processor:
     def diarizer(self) -> diarize.Diarizer:
         if self._diarizer is None:
             self.log("  loading diarizer…")
-            self._diarizer = diarize.Diarizer(device="auto", warmup=True, quiet=True)
+            self._diarizer = diarize.Diarizer(
+                device=self.cfg.device,
+                backend=self.cfg.diarization_backend,
+                model=self.cfg.diarization_model,
+                token=self.cfg.diarization_token,
+                warmup=True,
+                quiet=True,
+            )
         return self._diarizer
 
     def process(self, store: Store, episode: Episode, force: bool = False) -> None:
@@ -183,7 +193,13 @@ class Processor:
             if cached.exists():
                 self.log("  asr cache unreadable, redoing")
         self.log("  transcribing…")
-        result = asr.transcribe(wav, self.cfg.asr_model, self.cfg.language)
+        result = asr.transcribe(
+            wav,
+            self.cfg.asr_model,
+            self.cfg.language,
+            self.cfg.asr_backend,
+            self.cfg.device,
+        )
         _write_cache(cached, result)
         return result
 

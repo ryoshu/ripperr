@@ -1,4 +1,4 @@
-"""Speaker diarization via Senko (CoreML on Apple Silicon).
+"""Speaker diarization adapters with normalized speaker segments.
 
 Senko is a tuned fork of the 3D-Speaker pipeline: pyannote segmentation-3.0 for
 VAD, CAM++ for embeddings, spectral or UMAP+HDBSCAN clustering. On macOS both
@@ -10,6 +10,7 @@ The diarizer holds model weights, so build it once and reuse it across episodes.
 
 from __future__ import annotations
 
+import platform
 from pathlib import Path
 from typing import Any
 
@@ -19,15 +20,67 @@ _SPEAKER_KEYS = ("speaker", "speaker_id", "label")
 
 
 class Diarizer:
-    def __init__(self, device: str = "auto", warmup: bool = True, quiet: bool = True):
-        import senko  # lazy import
+    def __init__(
+        self,
+        device: str = "auto",
+        warmup: bool = True,
+        quiet: bool = True,
+        backend: str = "auto",
+        model: str = "pyannote/speaker-diarization-community-1",
+        token: str | None = None,
+    ):
+        self.backend = backend_name(backend)
+        if self.backend == "senko":
+            import senko  # lazy import
 
-        self._impl = senko.Diarizer(device=device, warmup=warmup, quiet=quiet)
+            self._impl = senko.Diarizer(device=device, warmup=warmup, quiet=quiet)
+        else:
+            from pyannote.audio import Pipeline  # lazy import for the base install
+            import torch
+
+            self._impl = Pipeline.from_pretrained(model, token=token)
+            if self._impl is None:
+                raise RuntimeError(f"could not load diarization model {model}")
+            target = "cuda" if device == "cuda" or (device == "auto" and torch.cuda.is_available()) else "cpu"
+            self._impl.to(torch.device(target))
 
     def run(self, wav_path: Path) -> list[dict[str, Any]]:
-        result = self._impl.diarize(str(wav_path), generate_colors=False)
-        raw = result.get("merged_segments") or result.get("segments") or []
+        if self.backend == "senko":
+            result = self._impl.diarize(str(wav_path), generate_colors=False)
+            raw = result.get("merged_segments") or result.get("segments") or []
+        else:
+            result = self._impl(str(wav_path))
+            annotation = _pyannote_annotation(result)
+            raw = [
+                {"start": turn.start, "end": turn.end, "speaker": speaker}
+                for turn, _, speaker in annotation.itertracks(yield_label=True)
+            ] if annotation is not None else []
         return normalize_segments(raw)
+
+
+def backend_name(backend: str = "auto") -> str:
+    if backend == "auto":
+        return "senko" if _apple_silicon() else "pyannote"
+    if backend not in {"senko", "pyannote"}:
+        raise ValueError("RIPPERR_DIARIZATION_BACKEND must be auto, senko, or pyannote")
+    return backend
+
+
+def _pyannote_annotation(result: Any) -> Any:
+    if isinstance(result, dict):
+        for key in ("exclusive_speaker_diarization", "speaker_diarization"):
+            if result.get(key) is not None:
+                return result[key]
+        return None
+    for key in ("exclusive_speaker_diarization", "speaker_diarization"):
+        annotation = getattr(result, key, None)
+        if annotation is not None:
+            return annotation
+    return None
+
+
+def _apple_silicon() -> bool:
+    return platform.system() == "Darwin" and platform.machine().lower() in {"arm64", "aarch64"}
 
 
 def normalize_segments(raw: Any) -> list[dict[str, Any]]:
