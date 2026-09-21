@@ -68,6 +68,7 @@ def make_handler(cfg: Config, token: str | None = None):
                     rip.close()
             except LookupError as exc:
                 _json(self, {"error": str(exc)}, HTTPStatus.NOT_FOUND)
+            # Keep typed operational errors ahead of the generic HTTP fallbacks.
             except ProcessingBusyError as exc:
                 _json(self, {"error": str(exc)}, HTTPStatus.CONFLICT)
             except ChangeLogPrunedError as exc:
@@ -168,6 +169,16 @@ def make_handler(cfg: Config, token: str | None = None):
             _json(self, {"error": "not found"}, HTTPStatus.NOT_FOUND)
 
         def _post(self, rip: Ripperr, parsed) -> None:
+            if parsed.path == "/v1/changes/bootstrap":
+                after = rip.change_seq()
+                emitted = rip.emit_current()
+                _json(self, {
+                    "emitted": emitted,
+                    "after": after,
+                    "next_cursor": rip.change_seq(),
+                })
+                return
+
             if parsed.path != "/v1/feeds":
                 _json(self, {"error": "not found"}, HTTPStatus.NOT_FOUND)
                 return

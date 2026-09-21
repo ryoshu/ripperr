@@ -140,6 +140,38 @@ def test_pruned_change_cursor_requires_rebootstrap(tmp_path):
         thread.join()
 
 
+def test_http_bootstrap_emits_current_after_pruning(tmp_path):
+    db = tmp_path / "ripperr.db"
+    store = Store(db)
+    feed = store.add_feed("https://feed")
+    store.add_episode(feed.id, "one", "One", None, "https://audio")
+    store.replace_turns(1, [Turn(0, "SPEAKER_00", 0, 1, "hello")])
+    assert store.prune_changes(2) == 2
+    store.close()
+
+    server, thread = _server(db, "secret")
+    try:
+        status, _, body = _post(
+            server,
+            "/v1/changes/bootstrap",
+            {},
+            {"Authorization": "Bearer secret"},
+        )
+        assert status == 200
+        assert body["emitted"] == 1 and body["after"] == 2
+        assert body["next_cursor"] == 3
+
+        status, _, page = _get(
+            server,
+            "/v1/changes?after=2",
+            {"Authorization": "Bearer secret"},
+        )
+        assert status == 200 and page["changes"][0]["seq"] == 3
+    finally:
+        server.shutdown()
+        thread.join()
+
+
 def test_episode_list_returns_feed_metadata(tmp_path):
     db = tmp_path / "ripperr.db"
     store = Store(db)

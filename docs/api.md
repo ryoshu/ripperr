@@ -118,7 +118,16 @@ A change-feed consumer should:
 
 If a consumer asks for a cursor older than the retained log, the Python API
 raises `ChangeLogPrunedError`; HTTP clients receive `410 Gone` with `reset: true`.
-Re-bootstrap with `emit_current()` before polling again.
+Recover by re-bootstrapping: call `emit_current()`, or `POST /v1/changes/bootstrap`
+over HTTP, then poll from the `after` it returns.
+
+Bootstrap emits only episodes that are completed now. A `deleted` event inside the
+pruned range is gone for good, so a consumer that has reset must treat the
+re-emitted set as authoritative: keep the episodes it sees again, and drop any
+local episode whose guid is not re-emitted (`GET /v1/episodes` lists every guid
+if it needs the full set). Bootstrap appends one event per completed episode to
+the shared log, so every other consumer replays them too; that is harmless because
+they compare revisions, but avoid calling it repeatedly.
 
 Because `updated_since` is inclusive, the same episode can appear on consecutive
 polls; comparing revisions makes that harmless. Timestamps have second resolution,
@@ -204,7 +213,10 @@ available as defense in depth behind that trusted boundary.
 /v1/changes?after=SEQ&limit=N` returns ascending, cursor-based metadata and
 transcript, and deleted events. The cursor is advanced by the last returned
 `seq`; callers may safely replay a page. A deleted event means the episode
-endpoint will no longer be available.
+endpoint will no longer be available. `POST /v1/changes/bootstrap` requires
+the bearer token, emits the current revision of every completed episode, and
+returns `after` and `next_cursor`; fetch the emitted events with
+`GET /v1/changes?after=after`.
 
 `GET /v1/feeds` returns the registered feed ids, URLs and titles. `POST
 /v1/feeds` accepts `{"url": "https://…", "title": "…"}` and returns the
