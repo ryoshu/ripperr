@@ -43,6 +43,7 @@ were the feed's own ids.
 | `feed(feed_id) -> Feed \| None` | Returns one feed, or `None` if unknown. |
 | `update_feed(feed_id, url, title=None) -> Feed` | Replaces a feed's URL and title. Raises `LookupError` if unknown and `ValueError` if the URL is already registered. |
 | `delete_feed(feed_id) -> None` | Removes a feed and its stored episodes. Raises `LookupError` if unknown and `ProcessingBusyError` if model processing is active. |
+| `prune_cache() -> int` | Removes stale ASR/diarization cache variants and caches for unknown episodes. Raises `ProcessingBusyError` if model processing is active. |
 | `sync() -> int` | Polls every feed, records episodes not yet seen and returns how many were new. A new feed starts with only its newest episode; later syncs take only entries ahead of the newest known episode, so a historical playlist is not backfilled. For episodes already known it refreshes `title`, `summary`, `published` and `audio_url` when the feed now gives a different value, so corrected metadata reaches the next retry; a value the feed no longer provides never erases the stored one. Status, audio, transcript and `revision` are untouched. A feed that fails to load is logged and skipped; `sync` does not raise for it. |
 | `process(limit=None, *, glossary=None, retry_errors=False, force=False) -> list[Episode]` | Downloads, transcribes, diarizes and merges pending episodes, then returns them as they now stand. Processing is exclusive across processes sharing the same database, so a concurrent run returns no work immediately. See "Processing". |
 | `remerge(ref, *, glossary=None) -> Episode` | Redoes the glossary and merge steps from cached model output and returns the episode. Raises `LookupError` for an unknown episode and `FileNotFoundError` if it has no usable cached model output (missing, or unreadable). |
@@ -143,8 +144,12 @@ positions across revisions.
   missing and redone, not as an error.
 - ASR and diarization caches are keyed by episode and the relevant backend,
   runtime version, model, device, language, and cache format. Changing those
-  settings selects a new cache automatically; use `force=True` to replace the
-  current cache.
+settings selects a new cache automatically; use `force=True` to replace the
+current cache.
+
+`prune_cache()` is an explicit cleanup operation for the older cache variants
+left behind after model or backend settings change. It keeps the cache selected
+by the current configuration for every live episode.
 - Processing needs a selected local model backend. Reading does not (see below).
 
 ## Glossary corrections

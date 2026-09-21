@@ -299,6 +299,24 @@ def test_delete_feed_waits_for_processing_lock(tmp_path):
     rip.close()
 
 
+def test_prune_cache_removes_stale_and_orphaned_variants(tmp_path):
+    rip = Ripperr(Config(root=tmp_path), log=lambda _: None)
+    feed = rip.add_feed("http://feed")
+    rip.store.add_episode(feed.id, "one", "One", None, "http://audio")
+    episode = rip.episodes()[0]
+    current = rip.cfg.raw_path(episode.guid, "asr")
+    stale = rip.cfg.raw_dir / f"{rip.cfg.episode_key(episode.guid)}.asr-deadbeefdead.json"
+    orphan = rip.cfg.raw_dir / "0123456789ab.diar-deadbeefdead.json"
+    current.parent.mkdir(parents=True, exist_ok=True)
+    current.write_text("{}")
+    stale.write_text("{}")
+    orphan.write_text("{}")
+
+    assert rip.prune_cache() == 2
+    assert current.exists() and not stale.exists() and not orphan.exists()
+    rip.close()
+
+
 def test_readding_deleted_episode_keeps_revision_monotonic(tmp_path):
     rip = Ripperr(Config(root=tmp_path), log=lambda _: None)
     feed = rip.add_feed("http://feed")

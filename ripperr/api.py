@@ -16,6 +16,7 @@ tell when it needs to re-read one.
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 from .config import Config, default_config
@@ -23,6 +24,9 @@ from .glossary import load as load_glossary
 from .models import Change, Episode, Feed, Hit, Transcript
 from .pipeline import Log, Processor, remerge, sync_feeds
 from .store import Store
+
+
+_CACHE_FILE = re.compile(r"^(?P<episode_key>[0-9a-f]{12})\.(?:asr|diar)-[0-9a-f]{12}\.json$")
 
 
 class ProcessingBusyError(RuntimeError):
@@ -71,6 +75,33 @@ class Ripperr:
             episodes = self.store.delete_feed(feed_id)
             for episode in episodes:
                 self._remove_episode_files(episode)
+
+    def prune_cache(self) -> int:
+        """Remove stale model caches and return the number of files removed."""
+        with self.store.processing_lock() as acquired:
+            if not acquired:
+                raise ProcessingBusyError("processing already running; retry later")
+            episodes = self.store.episodes()
+            active_keys = {self.cfg.episode_key(episode.guid) for episode in episodes}
+            current_paths = {
+                self.cfg.raw_path(episode.guid, kind).resolve()
+                for episode in episodes
+                for kind in ("asr", "diar")
+            }
+            if not self.cfg.raw_dir.exists():
+                return 0
+
+            removed = 0
+            for path in self.cfg.raw_dir.iterdir():
+                match = _CACHE_FILE.fullmatch(path.name)
+                if not path.is_file() or match is None:
+                    continue
+                if match.group("episode_key") in active_keys and path.resolve() in current_paths:
+                    continue
+                self._unlink(path)
+                if not path.exists():
+                    removed += 1
+            return removed
 
     def sync(self) -> int:
         """Poll every feed and record new episodes. Returns how many were new."""
