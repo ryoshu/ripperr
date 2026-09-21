@@ -345,10 +345,17 @@ class Store:
         return _episode(row) if row else None
 
     def episodes(
-        self, status: str | None = None, updated_since: str | None = None
+        self,
+        status: str | None = None,
+        updated_since: str | None = None,
+        after_id: int = 0,
+        limit: int | None = None,
     ) -> list[Episode]:
         """Episodes in id order. `updated_since` is an ISO timestamp, inclusive."""
         where, params = [], []
+        if after_id:
+            where.append("id > ?")
+            params.append(after_id)
         if status:
             where.append("status = ?")
             params.append(status)
@@ -358,7 +365,11 @@ class Store:
         sql = "SELECT * FROM episodes"
         if where:
             sql += " WHERE " + " AND ".join(where)
-        return [_episode(r) for r in self.conn.execute(sql + " ORDER BY id", params)]
+        sql += " ORDER BY id"
+        if limit is not None:
+            sql += " LIMIT ?"
+            params.append(limit)
+        return [_episode(r) for r in self.conn.execute(sql, params)]
 
     def source_guids(self, feed_id: int) -> set[str]:
         return {

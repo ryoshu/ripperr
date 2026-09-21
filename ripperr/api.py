@@ -26,8 +26,10 @@ from .store import Store
 class Ripperr:
     def __init__(self, cfg: Config | None = None, *, store: Store | None = None, log: Log = print):
         self.cfg = cfg or CONFIG
-        self.cfg.ensure_dirs()
-        self.store = store or Store(self.cfg.db_path)
+        if store is None:
+            self.cfg.ensure_dirs()
+            store = Store(self.cfg.db_path)
+        self.store = store
         self.log = log
 
     def __enter__(self) -> Ripperr:
@@ -41,11 +43,23 @@ class Ripperr:
 
     # ---- ingest ----------------------------------------------------------
 
-    def add_feed(self, url: str) -> Feed:
-        return self.store.add_feed(url)
+    def add_feed(self, url: str, title: str | None = None) -> Feed:
+        return self.store.add_feed(url, title)
 
     def feeds(self) -> list[Feed]:
         return self.store.feeds()
+
+    def feed(self, feed_id: int) -> Feed | None:
+        try:
+            return self.store.feed(feed_id)
+        except LookupError:
+            return None
+
+    def update_feed(self, feed_id: int, url: str, title: str | None = None) -> Feed:
+        return self.store.update_feed(feed_id, url, title)
+
+    def delete_feed(self, feed_id: int) -> None:
+        self.store.delete_feed(feed_id)
 
     def sync(self) -> int:
         """Poll every feed and record new episodes. Returns how many were new."""
@@ -95,11 +109,21 @@ class Ripperr:
         return self.store.episode(ref)
 
     def episodes(
-        self, *, status: str | None = None, updated_since: str | None = None
+        self,
+        *,
+        status: str | None = None,
+        updated_since: str | None = None,
+        after: int = 0,
+        limit: int | None = None,
     ) -> list[Episode]:
-        """Episodes in id order. `updated_since` is an inclusive ISO 8601 timestamp,
-        so a poller should expect repeats and compare `revision`."""
-        return self.store.episodes(status=status, updated_since=updated_since)
+        """Episodes in id order, optionally after a local id and up to a limit.
+
+        `updated_since` is an inclusive ISO 8601 timestamp, so a poller should
+        expect repeats and compare `revision`. `after` is a cursor for paging.
+        """
+        return self.store.episodes(
+            status=status, updated_since=updated_since, after_id=after, limit=limit
+        )
 
     def transcript(self, ref: str | int) -> Transcript | None:
         with self.store.snapshot():  # episode, turns and corrections from one revision
@@ -113,6 +137,12 @@ class Ripperr:
 
     def stats(self) -> dict[str, int]:
         return self.store.stats()
+
+    def change_seq(self) -> int:
+        return self.store.highest_change_seq()
+
+    def changes(self, after: int = 0, limit: int = 100) -> list[dict]:
+        return self.store.changes(after, limit)
 
     # ---- internals -------------------------------------------------------
 

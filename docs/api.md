@@ -38,8 +38,11 @@ were the feed's own ids.
 
 | Method | Behaviour |
 | --- | --- |
-| `add_feed(url) -> Feed` | Idempotent: adding a known URL returns the existing feed. The URL may be an RSS feed or a YouTube playlist. |
+| `add_feed(url, title=None) -> Feed` | Idempotent: adding a known URL returns the existing feed. The URL may be an RSS feed or a YouTube playlist. |
 | `feeds() -> list[Feed]` | In id order. |
+| `feed(feed_id) -> Feed \| None` | Returns one feed, or `None` if unknown. |
+| `update_feed(feed_id, url, title=None) -> Feed` | Replaces a feed's URL and title. Raises `LookupError` if unknown and `ValueError` if the URL is already registered. |
+| `delete_feed(feed_id) -> None` | Removes a feed and its stored episodes. Raises `LookupError` if unknown. |
 | `sync() -> int` | Polls every feed, records episodes not yet seen and returns how many were new. A new feed starts with only its newest episode; later syncs take only entries ahead of the newest known episode, so a historical playlist is not backfilled. For episodes already known it refreshes `title`, `summary`, `published` and `audio_url` when the feed now gives a different value, so corrected metadata reaches the next retry; a value the feed no longer provides never erases the stored one. Status, audio, transcript and `revision` are untouched. A feed that fails to load is logged and skipped; `sync` does not raise for it. |
 | `process(limit=None, *, glossary=None, retry_errors=False, force=False) -> list[Episode]` | Downloads, transcribes, diarizes and merges pending episodes, then returns them as they now stand. Processing is exclusive across processes sharing the same database, so a concurrent run returns no work immediately. See "Processing". |
 | `remerge(ref, *, glossary=None) -> Episode` | Redoes the glossary and merge steps from cached model output and returns the episode. Raises `LookupError` for an unknown episode and `FileNotFoundError` if it has no usable cached model output (missing, or unreadable). |
@@ -49,10 +52,12 @@ were the feed's own ids.
 | Method | Behaviour |
 | --- | --- |
 | `episode(ref) -> Episode \| None` | `None` if unknown. |
-| `episodes(*, status=None, updated_since=None) -> list[Episode]` | In id order. `updated_since` is an ISO 8601 UTC timestamp and is **inclusive**. |
+| `episodes(*, status=None, updated_since=None, after=0, limit=None) -> list[Episode]` | In id order. `updated_since` is an ISO 8601 UTC timestamp and is **inclusive**. `after` is an exclusive local-id cursor; `limit` caps the returned page. |
 | `transcript(ref) -> Transcript \| None` | The episode, its turns in `idx` order, and the glossary corrections applied to this revision. `None` if unknown. An episode that is not done normally has no turns. |
 | `search(query, limit=20) -> list[Hit]` | Full-text search over turns, best match first. The query may use FTS5 syntax; if it is not valid FTS5 (for example `don't`), it is retried as a literal phrase. `Hit.snippet` marks matches with `[` and `]`. |
 | `stats() -> dict[str, int]` | Episode count per status. |
+| `change_seq() -> int` | Highest committed change-feed sequence number. |
+| `changes(after=0, limit=100) -> list[dict]` | Returns cursor-based transcript and metadata change events in ascending sequence order. |
 
 ## Episode lifecycle
 

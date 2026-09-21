@@ -125,6 +125,7 @@ def test_episode_list_returns_feed_metadata(tmp_path):
     try:
         status, _, body = _get(server, "/v1/episodes", {"Authorization": "Bearer secret"})
         assert status == 200
+        assert body["next_cursor"] == 1 and not body["has_more"]
         assert body["episodes"] == [{
             "guid": guid,
             "source_guid": "one",

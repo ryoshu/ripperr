@@ -10,6 +10,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, unquote, urlparse
 
+from .api import Ripperr
 from .store import Store
 
 
@@ -45,11 +46,11 @@ def make_handler(db_path: Path, token: str | None = None):
                 return
             parsed = urlparse(self.path)
             try:
-                store = Store(db_path)
+                rip = Ripperr(store=Store(db_path), log=lambda _: None)
                 try:
-                    self._get(store, parsed)
+                    self._get(rip, parsed)
                 finally:
-                    store.close()
+                    rip.close()
             except ValueError as exc:
                 _json(self, {"error": str(exc)}, HTTPStatus.BAD_REQUEST)
             except Exception:  # noqa: BLE001 - never leak a traceback or host path over HTTP
@@ -60,11 +61,11 @@ def make_handler(db_path: Path, token: str | None = None):
                 return
             parsed = urlparse(self.path)
             try:
-                store = Store(db_path)
+                rip = Ripperr(store=Store(db_path), log=lambda _: None)
                 try:
-                    self._post(store, parsed)
+                    self._post(rip, parsed)
                 finally:
-                    store.close()
+                    rip.close()
             except ValueError as exc:
                 _json(self, {"error": str(exc)}, HTTPStatus.BAD_REQUEST)
             except Exception:  # noqa: BLE001 - never leak a traceback or host path over HTTP
@@ -75,11 +76,11 @@ def make_handler(db_path: Path, token: str | None = None):
                 return
             parsed = urlparse(self.path)
             try:
-                store = Store(db_path)
+                rip = Ripperr(store=Store(db_path), log=lambda _: None)
                 try:
-                    self._put(store, parsed)
+                    self._put(rip, parsed)
                 finally:
-                    store.close()
+                    rip.close()
             except LookupError as exc:
                 _json(self, {"error": str(exc)}, HTTPStatus.NOT_FOUND)
             except ValueError as exc:
@@ -92,11 +93,11 @@ def make_handler(db_path: Path, token: str | None = None):
                 return
             parsed = urlparse(self.path)
             try:
-                store = Store(db_path)
+                rip = Ripperr(store=Store(db_path), log=lambda _: None)
                 try:
-                    self._delete(store, parsed)
+                    self._delete(rip, parsed)
                 finally:
-                    store.close()
+                    rip.close()
             except LookupError as exc:
                 _json(self, {"error": str(exc)}, HTTPStatus.NOT_FOUND)
             except ValueError as exc:
@@ -115,51 +116,62 @@ def make_handler(db_path: Path, token: str | None = None):
                 return False
             return True
 
-        def _get(self, store: Store, parsed) -> None:
+        def _get(self, rip: Ripperr, parsed) -> None:
             if parsed.path == "/healthz":
-                _json(self, {"ok": True, "change_seq": store.highest_change_seq()})
+                _json(self, {"ok": True, "change_seq": rip.change_seq()})
                 return
 
             if parsed.path == "/v1/changes":
                 query = parse_qs(parsed.query)
                 after = _integer(query, "after", 0, 0)
                 limit = _integer(query, "limit", 100, 1, 1000)
-                changes = store.changes(after, limit)
+                changes = rip.changes(after, limit)
                 next_cursor = changes[-1]["seq"] if changes else after
                 _json(self, {
                     "changes": changes,
                     "next_cursor": next_cursor,
-                    "has_more": bool(changes) and next_cursor < store.highest_change_seq(),
+                    "has_more": bool(changes) and next_cursor < rip.change_seq(),
                 })
                 return
 
             if parsed.path == "/v1/feeds":
-                _json(self, {"feeds": [_feed_json(feed) for feed in store.feeds()]})
+                _json(self, {"feeds": [_feed_json(feed) for feed in rip.feeds()]})
                 return
 
             if parsed.path == "/v1/episodes":
+                query = parse_qs(parsed.query)
+                after = _integer(query, "after", 0, 0)
+                limit = _integer(query, "limit", 100, 1, 1000)
+                episodes = rip.episodes(after=after, limit=limit + 1)
+                has_more = len(episodes) > limit
+                episodes = episodes[:limit]
+                next_cursor = episodes[-1].id if episodes else after
+                feeds = {feed.id: feed for feed in rip.feeds()}
                 _json(self, {
-                    "episodes": [_episode_json(store, episode) for episode in store.episodes()]
+                    "episodes": [_episode_json(episode, feeds[episode.feed_id]) for episode in episodes],
+                    "next_cursor": next_cursor,
+                    "has_more": has_more,
                 })
                 return
 
             prefix = "/v1/episodes/"
             if parsed.path.startswith(prefix) and parsed.path.count("/") == 3:
                 guid = unquote(parsed.path[len(prefix):])
-                with store.snapshot():
-                    episode = store.episode(guid)
-                    if episode is None:
-                        body = {"error": "not found"}
-                        status = HTTPStatus.NOT_FOUND
-                        etag = None
-                    else:
-                        body = _episode_json(store, episode)
-                        body["corrections"] = [c.__dict__ for c in store.corrections(episode.id)]
-                        body["turns"] = [t.__dict__ for t in store.turns(episode.id)]
-                        status = HTTPStatus.OK
-                        etag = '"' + hashlib.sha256(json.dumps(
-                            body, sort_keys=True, separators=(",", ":"), default=str
-                        ).encode()).hexdigest()[:32] + '"'
+                transcript = rip.transcript(guid)
+                if transcript is None:
+                    body = {"error": "not found"}
+                    status = HTTPStatus.NOT_FOUND
+                    etag = None
+                else:
+                    body = _episode_json(
+                        transcript.episode, rip.feed(transcript.episode.feed_id)
+                    )
+                    body["corrections"] = [c.__dict__ for c in transcript.corrections]
+                    body["turns"] = [t.__dict__ for t in transcript.turns]
+                    status = HTTPStatus.OK
+                    etag = '"' + hashlib.sha256(json.dumps(
+                        body, sort_keys=True, separators=(",", ":"), default=str
+                    ).encode()).hexdigest()[:32] + '"'
                 if status == HTTPStatus.NOT_FOUND:
                     _json(self, body, status)
                     return
@@ -173,24 +185,24 @@ def make_handler(db_path: Path, token: str | None = None):
 
             _json(self, {"error": "not found"}, HTTPStatus.NOT_FOUND)
 
-        def _post(self, store: Store, parsed) -> None:
+        def _post(self, rip: Ripperr, parsed) -> None:
             if parsed.path != "/v1/feeds":
                 _json(self, {"error": "not found"}, HTTPStatus.NOT_FOUND)
                 return
 
             url, title = self._feed_payload()
-            feed = store.add_feed(url, title)
+            feed = rip.add_feed(url, title)
             _json(self, {"feed": _feed_json(feed)}, HTTPStatus.CREATED)
 
-        def _put(self, store: Store, parsed) -> None:
+        def _put(self, rip: Ripperr, parsed) -> None:
             feed_id = _feed_id(parsed.path)
             url, title = self._feed_payload()
-            feed = store.update_feed(feed_id, url, title)
+            feed = rip.update_feed(feed_id, url, title)
             _json(self, {"feed": _feed_json(feed)})
 
-        def _delete(self, store: Store, parsed) -> None:
+        def _delete(self, rip: Ripperr, parsed) -> None:
             feed_id = _feed_id(parsed.path)
-            store.delete_feed(feed_id)
+            rip.delete_feed(feed_id)
             _json(self, {"deleted": feed_id})
 
         def _feed_payload(self) -> tuple[str, str | None]:
@@ -228,8 +240,7 @@ def _feed_json(feed) -> dict[str, object]:
     return {"id": feed.id, "url": feed.url, "title": feed.title}
 
 
-def _episode_json(store: Store, episode) -> dict[str, object]:
-    feed = store.feed(episode.feed_id)
+def _episode_json(episode, feed) -> dict[str, object]:
     return {
         "guid": episode.guid,
         "source_guid": episode.source_guid,

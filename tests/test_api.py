@@ -76,6 +76,24 @@ def test_episodes_filters_by_status_and_update_time(tmp_path):
     assert rip.episodes(updated_since="2999-01-01T00:00:00+00:00") == []
 
 
+def test_public_feed_management_and_episode_pagination(tmp_path):
+    rip = Ripperr(Config(root=tmp_path), log=lambda _: None)
+    feed = rip.add_feed("http://feed", "Old")
+    assert rip.feed(feed.id) == feed
+    assert rip.update_feed(feed.id, "http://new-feed", "New").title == "New"
+
+    for source_guid in ("one", "two", "three"):
+        rip.store.add_episode(feed.id, source_guid, source_guid, None, "http://audio")
+
+    first = rip.episodes(limit=2)
+    assert [episode.source_guid for episode in first] == ["one", "two"]
+    assert [episode.source_guid for episode in rip.episodes(after=first[-1].id)] == ["three"]
+    assert rip.feed(feed.id).url == "http://new-feed"
+    rip.delete_feed(feed.id)
+    assert rip.feed(feed.id) is None
+    rip.close()
+
+
 def test_search_returns_typed_hits_with_guid(tmp_path):
     rip, guid = make(tmp_path)
     rip.remerge(guid, glossary=["Bhayshul Tuten"])
