@@ -156,6 +156,18 @@ def test_old_database_is_migrated(tmp_path):
     assert store.add_episode(1, "g", "T", None, "a") is False  # not duplicated on the next sync
     assert store.add_episode(1, "new", "N", None, "b") is True
     assert store.episode(public_guid("u", "new")).source_guid == "new"
+    assert store.conn.execute("PRAGMA user_version").fetchone()[0] == 1
+
+
+def test_current_schema_skips_migration_on_reopen(tmp_path, monkeypatch):
+    db = tmp_path / "current.db"
+    Store(db).close()
+
+    def unexpected_migration(self):
+        raise AssertionError("current databases should not migrate on every open")
+
+    monkeypatch.setattr(Store, "_migrate", unexpected_migration)
+    Store(db).close()
 
 
 # ---- feed refresh ----------------------------------------------------------

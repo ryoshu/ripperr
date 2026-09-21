@@ -19,9 +19,9 @@ from typing import Iterator, Sequence
 
 from .models import Correction, Episode, Feed, Hit, Turn
 
-SCHEMA = """
-PRAGMA journal_mode = WAL;
+SCHEMA_VERSION = 1
 
+SCHEMA = """
 CREATE TABLE IF NOT EXISTS feeds (
     id        INTEGER PRIMARY KEY,
     url       TEXT NOT NULL UNIQUE,
@@ -127,9 +127,17 @@ class Store:
         self.conn = sqlite3.connect(self.path)
         self.conn.row_factory = sqlite3.Row
         self.conn.execute("PRAGMA foreign_keys = ON")
-        self.conn.executescript(SCHEMA)
-        self._migrate()
-        self.conn.commit()
+        version = self.conn.execute("PRAGMA user_version").fetchone()[0]
+        if version > SCHEMA_VERSION:
+            raise RuntimeError(
+                f"database schema {version} is newer than supported schema {SCHEMA_VERSION}"
+            )
+        if version < SCHEMA_VERSION:
+            self.conn.execute("PRAGMA journal_mode = WAL")
+            self.conn.executescript(SCHEMA)
+            self._migrate()
+            self.conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
+            self.conn.commit()
 
     def _migrate(self) -> None:
         """Bring a database created by an older version up to date."""
