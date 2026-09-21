@@ -139,10 +139,20 @@ class Store:
             )
         if version < SCHEMA_VERSION:
             self.conn.execute("PRAGMA journal_mode = WAL")
-            self.conn.executescript(SCHEMA)
-            self._migrate(version)
-            self.conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
-            self.conn.commit()
+            try:
+                self.conn.executescript("BEGIN IMMEDIATE;\n" + SCHEMA)
+                version = self.conn.execute("PRAGMA user_version").fetchone()[0]
+                if version > SCHEMA_VERSION:
+                    raise RuntimeError(
+                        f"database schema {version} is newer than supported schema {SCHEMA_VERSION}"
+                    )
+                if version < SCHEMA_VERSION:
+                    self._migrate(version)
+                    self.conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
+                self.conn.commit()
+            except BaseException:
+                self.conn.rollback()
+                raise
 
     def _migrate(self, version: int) -> None:
         """Bring a database created by an older version up to date."""
@@ -179,22 +189,20 @@ class Store:
                 "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'changes'"
             ).fetchone()
             if table and "'deleted'" not in table["sql"]:
-                self.conn.executescript(
-                    """
-                    CREATE TABLE changes_v2 (
+                self.conn.execute(
+                    """CREATE TABLE changes_v2 (
                         seq          INTEGER PRIMARY KEY AUTOINCREMENT,
                         episode_guid TEXT NOT NULL,
                         revision     INTEGER NOT NULL,
                         kind         TEXT NOT NULL CHECK (kind IN ('transcript', 'metadata', 'deleted')),
                         occurred_at  TEXT NOT NULL
-                    );
-                    INSERT INTO changes_v2 SELECT * FROM changes;
-                    DROP INDEX IF EXISTS idx_changes_seq;
-                    DROP TABLE changes;
-                    ALTER TABLE changes_v2 RENAME TO changes;
-                    CREATE INDEX idx_changes_seq ON changes(seq);
-                    """
+                    )"""
                 )
+                self.conn.execute("INSERT INTO changes_v2 SELECT * FROM changes")
+                self.conn.execute("DROP INDEX IF EXISTS idx_changes_seq")
+                self.conn.execute("DROP TABLE changes")
+                self.conn.execute("ALTER TABLE changes_v2 RENAME TO changes")
+                self.conn.execute("CREATE INDEX idx_changes_seq ON changes(seq)")
 
     def close(self) -> None:
         self.conn.close()
