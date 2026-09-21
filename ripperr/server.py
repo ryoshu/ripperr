@@ -103,9 +103,9 @@ def make_handler(db_path: Path, token: str | None = None, cfg: Config | None = N
                 after = _integer(query, "after", 0, 0)
                 limit = _integer(query, "limit", 100, 1, 1000)
                 changes = rip.changes(after, limit)
-                next_cursor = changes[-1]["seq"] if changes else after
+                next_cursor = changes[-1].seq if changes else after
                 _json(self, {
-                    "changes": changes,
+                    "changes": [_change_json(change) for change in changes],
                     "next_cursor": next_cursor,
                     "has_more": bool(changes) and next_cursor < rip.change_seq(),
                 })
@@ -250,6 +250,16 @@ def _episode_json(episode, feed) -> dict[str, object]:
         "updated_at": episode.updated_at,
         "revision": episode.revision,
         "merged_at": episode.merged_at,
+    }
+
+
+def _change_json(change) -> dict[str, object]:
+    return {
+        "seq": change.seq,
+        "episode_guid": change.episode_guid,
+        "revision": change.revision,
+        "kind": change.kind,
+        "occurred_at": change.occurred_at,
     }
 
 

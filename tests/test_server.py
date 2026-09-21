@@ -69,7 +69,7 @@ def test_transcript_and_metadata_events_are_transactional(tmp_path):
     feed = store.add_feed("https://feed")
     assert store.add_episode(feed.id, "one", "One", None, "https://audio", "https://show/one")
     episode = store.episode_by_id(1)
-    assert [(x["kind"], x["revision"]) for x in store.changes()] == [("metadata", 0)]
+    assert [(x.kind, x.revision) for x in store.changes()] == [("metadata", 0)]
 
     with pytest.raises(Exception):
         store.replace_turns(episode.id, [Turn(0, "S", 0, 1, None)])
@@ -77,10 +77,10 @@ def test_transcript_and_metadata_events_are_transactional(tmp_path):
     assert len(store.changes()) == 1
 
     store.replace_turns(episode.id, [Turn(0, "S", 0, 1, "hello")])
-    assert [(x["kind"], x["revision"]) for x in store.changes()] == [
+    assert [(x.kind, x.revision) for x in store.changes()] == [
         ("metadata", 0), ("transcript", 1)]
     store.add_feed("https://feed", "Renamed Show")
-    assert store.changes()[-1]["kind"] == "metadata"
+    assert store.changes()[-1].kind == "metadata"
 
 
 def test_server_change_feed_and_revision_etag(tmp_path):

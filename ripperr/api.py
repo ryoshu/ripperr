@@ -20,7 +20,7 @@ from pathlib import Path
 
 from .config import Config, default_config
 from .glossary import load as load_glossary
-from .models import Episode, Feed, Hit, Transcript
+from .models import Change, Episode, Feed, Hit, Transcript
 from .pipeline import Log, Processor, remerge, sync_feeds
 from .store import Store
 
@@ -152,7 +152,7 @@ class Ripperr:
     def change_seq(self) -> int:
         return self.store.highest_change_seq()
 
-    def changes(self, after: int = 0, limit: int = 100) -> list[dict]:
+    def changes(self, after: int = 0, limit: int = 100) -> list[Change]:
         return self.store.changes(after, limit)
 
     def emit_current(self) -> int:

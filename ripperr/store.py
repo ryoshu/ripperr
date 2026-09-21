@@ -17,7 +17,7 @@ from email.utils import parsedate_to_datetime
 from pathlib import Path
 from typing import Iterator, Sequence
 
-from .models import Correction, Episode, Feed, Hit, Turn
+from .models import Change, Correction, Episode, Feed, Hit, Turn
 
 SCHEMA_VERSION = 3
 
@@ -523,13 +523,13 @@ class Store:
         row = self.conn.execute("SELECT COALESCE(MAX(seq), 0) AS seq FROM changes").fetchone()
         return int(row["seq"])
 
-    def changes(self, after: int = 0, limit: int = 100) -> list[dict]:
+    def changes(self, after: int = 0, limit: int = 100) -> list[Change]:
         rows = self.conn.execute(
             """SELECT seq, episode_guid, revision, kind, occurred_at
                FROM changes WHERE seq > ? ORDER BY seq LIMIT ?""",
             (after, limit),
         )
-        return [dict(r) for r in rows]
+        return [Change(**dict(row)) for row in rows]
 
     def emit_current(self) -> int:
         """Queue the current revision of every completed episode for bootstrap."""

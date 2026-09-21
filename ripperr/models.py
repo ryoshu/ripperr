@@ -68,3 +68,12 @@ class Transcript:
     episode: Episode
     turns: list[Turn]
     corrections: list[Correction]  # glossary swaps applied to this revision
+
+
+@dataclass(frozen=True)
+class Change:
+    seq: int
+    episode_guid: str
+    revision: int
+    kind: str  # transcript | metadata | deleted
+    occurred_at: str  # ISO 8601 UTC

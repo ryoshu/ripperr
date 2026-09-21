@@ -57,7 +57,7 @@ were the feed's own ids.
 | `search(query, limit=20) -> list[Hit]` | Full-text search over turns, best match first. The query may use FTS5 syntax; if it is not valid FTS5 (for example `don't`), it is retried as a literal phrase. `Hit.snippet` marks matches with `[` and `]`. |
 | `stats() -> dict[str, int]` | Episode count per status. |
 | `change_seq() -> int` | Highest committed change-feed sequence number. |
-| `changes(after=0, limit=100) -> list[dict]` | Returns cursor-based transcript and metadata change events in ascending sequence order. |
+| `changes(after=0, limit=100) -> list[Change]` | Returns cursor-based transcript and metadata change events in ascending sequence order. |
 | `emit_current() -> int` | Queues the current revision of every completed episode for a new consumer's bootstrap. |
 
 ## Episode lifecycle

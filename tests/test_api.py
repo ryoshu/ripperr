@@ -81,7 +81,7 @@ def test_emit_current_is_available_through_public_api(tmp_path):
     rip, guid = make(tmp_path)
     rip.remerge(guid, glossary=[])
     assert rip.emit_current() == 1
-    assert rip.changes()[-1]["kind"] == "transcript"
+    assert rip.changes()[-1].kind == "transcript"
     rip.close()
 
 
@@ -217,7 +217,7 @@ def test_schema_migrates_old_change_constraint(tmp_path):
 
     store = Store(db)
     Store._insert_change(store.conn, "episode", 1, "deleted")
-    assert store.changes()[0]["kind"] == "deleted"
+    assert store.changes()[0].kind == "deleted"
     assert store.conn.execute("PRAGMA user_version").fetchone()[0] == 3
     store.close()
 
@@ -241,7 +241,7 @@ def test_delete_feed_emits_events_and_removes_owned_files(tmp_path):
     rip.delete_feed(feed.id)
 
     assert not source.exists() and not wav.exists() and not old_cache.exists()
-    assert rip.changes()[-1]["kind"] == "deleted"
+    assert rip.changes()[-1].kind == "deleted"
     rip.close()
 
 
@@ -295,7 +295,7 @@ def test_readding_deleted_episode_keeps_revision_monotonic(tmp_path):
 
     readded = rip.episode(guid)
     assert readded.revision == 2
-    assert [event["revision"] for event in rip.changes()] == [0, 1, 1, 2]
+    assert [event.revision for event in rip.changes()] == [0, 1, 1, 2]
     rip.close()
 
 
