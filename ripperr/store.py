@@ -122,8 +122,9 @@ def _published_iso(value: str) -> str | None:
 
 class Store:
     def __init__(self, path: Path):
-        path.parent.mkdir(parents=True, exist_ok=True)
-        self.conn = sqlite3.connect(path)
+        self.path = Path(path).resolve()
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        self.conn = sqlite3.connect(self.path)
         self.conn.row_factory = sqlite3.Row
         self.conn.execute("PRAGMA foreign_keys = ON")
         self.conn.executescript(SCHEMA)
@@ -176,6 +177,29 @@ class Store:
     def tx(self) -> Iterator[sqlite3.Connection]:
         with self.conn:
             yield self.conn
+
+    @contextmanager
+    def processing_lock(self) -> Iterator[bool]:
+        """Take the exclusive process-wide lock for model processing.
+
+        The lock lives beside the database rather than inside a SQLite
+        transaction, so a long transcription run does not hold up the
+        processor's own database writes. The kernel releases it if the owner
+        exits unexpectedly; the empty lock file itself is harmless.
+        """
+        from fcntl import LOCK_EX, LOCK_NB, LOCK_UN, flock
+
+        lock_path = self.path.with_name(self.path.name + ".processing.lock")
+        with lock_path.open("a") as handle:
+            try:
+                flock(handle.fileno(), LOCK_EX | LOCK_NB)
+            except BlockingIOError:
+                yield False
+                return
+            try:
+                yield True
+            finally:
+                flock(handle.fileno(), LOCK_UN)
 
     # ---- feeds -----------------------------------------------------------
 

@@ -63,16 +63,22 @@ class Ripperr:
 
         `glossary` is a list of terms (player names, say) to respell misheard
         names to. None falls back to the glossary file, if there is one; an empty
-        list turns the glossary off. Returns the processed episodes as they now stand.
+        list turns the glossary off. A second process that tries to run at the
+        same time returns no work immediately. Returns the processed episodes as
+        they now stand.
         """
-        todo = self.store.pending(limit=limit, retry_errors=retry_errors)
-        if not todo:
-            return []
-        self.log(f"processing {len(todo)} episode(s)")
-        proc = Processor(self.cfg, self.log, self._terms(glossary))
-        for ep in todo:
-            proc.process(self.store, ep, force=force)
-        return [self.store.episode(ep.guid) for ep in todo]
+        with self.store.processing_lock() as acquired:
+            if not acquired:
+                self.log("processing already running; skipping")
+                return []
+            todo = self.store.pending(limit=limit, retry_errors=retry_errors)
+            if not todo:
+                return []
+            self.log(f"processing {len(todo)} episode(s)")
+            proc = Processor(self.cfg, self.log, self._terms(glossary))
+            for ep in todo:
+                proc.process(self.store, ep, force=force)
+            return [self.store.episode(ep.guid) for ep in todo]
 
     def remerge(self, ref: str | int, *, glossary: list[str] | None = None) -> Episode:
         """Redo the glossary and merge stages from cached model output. Cheap, so

@@ -121,6 +121,22 @@ def test_same_source_guid_in_two_feeds_stays_distinct(tmp_path):
     assert len({e.guid for e in eps}) == 2 and {e.source_guid for e in eps} == {"1"}
 
 
+def test_processing_lock_is_exclusive_and_released(tmp_path):
+    first = Store(tmp_path / "t.db")
+    second = Store(tmp_path / "t.db")
+
+    with first.processing_lock() as acquired:
+        assert acquired
+        with second.processing_lock() as acquired:
+            assert not acquired
+
+    with second.processing_lock() as acquired:
+        assert acquired
+
+    first.close()
+    second.close()
+
+
 def test_old_database_is_migrated(tmp_path):
     db = tmp_path / "old.db"
     c = sqlite3.connect(db)
