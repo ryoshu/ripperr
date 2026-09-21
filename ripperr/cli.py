@@ -107,7 +107,7 @@ def cmd_remerge(args, rip: Ripperr) -> int:
 def cmd_serve(args, rip: Ripperr) -> int:
     from .server import serve
 
-    serve(rip.cfg.db_path, args.host, args.port, args.token, args.emit_current)
+    serve(rip.cfg.db_path, args.host, args.port, args.token, args.emit_current, rip.cfg)
     return 0
 
 
@@ -161,7 +161,12 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
-    with Ripperr() as rip:
+    try:
+        rip = Ripperr()
+    except ValueError as exc:
+        print(f"ripperr: {exc}", file=sys.stderr)
+        return 2
+    with rip:
         return args.func(args, rip)
 
 

@@ -19,7 +19,7 @@ from __future__ import annotations
 import hashlib
 from pathlib import Path
 
-from .config import CONFIG, Config
+from .config import Config, default_config
 from .glossary import load as load_glossary
 from .models import Episode, Feed, Hit, Transcript
 from .pipeline import Log, Processor, remerge, sync_feeds
@@ -28,7 +28,7 @@ from .store import Store
 
 class Ripperr:
     def __init__(self, cfg: Config | None = None, *, store: Store | None = None, log: Log = print):
-        self.cfg = cfg or CONFIG
+        self.cfg = cfg or default_config()
         if store is None:
             self.cfg.ensure_dirs()
             store = Store(self.cfg.db_path)

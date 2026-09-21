@@ -1,4 +1,7 @@
 from types import SimpleNamespace
+import os
+import subprocess
+import sys
 
 import pytest
 
@@ -46,3 +49,25 @@ def test_unknown_backend_is_explicit():
         asr.backend_name("nope")
     with pytest.raises(ValueError, match="RIPPERR_DIARIZATION_BACKEND"):
         diarize.backend_name("nope")
+
+
+def test_invalid_environment_is_deferred_until_config_creation():
+    env = os.environ.copy()
+    env["RIPPERR_ASR_BACKEND"] = "bogus"
+    result = subprocess.run(
+        [sys.executable, "-c", "import ripperr.cli"],
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0
+
+    result = subprocess.run(
+        [sys.executable, "-c", "from ripperr.config import default_config; default_config()"],
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode != 0 and "RIPPERR_ASR_BACKEND" in result.stderr

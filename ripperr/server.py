@@ -12,7 +12,7 @@ from pathlib import Path
 from urllib.parse import parse_qs, unquote, urlparse
 
 from .api import Ripperr
-from .config import Config
+from .config import Config, default_config
 from .store import Store
 
 
@@ -36,11 +36,12 @@ def _json(handler: BaseHTTPRequestHandler, value: object, status: int = 200, hea
     handler.wfile.write(payload)
 
 
-def make_handler(db_path: Path, token: str | None = None):
+def make_handler(db_path: Path, token: str | None = None, cfg: Config | None = None):
+    cfg = cfg or default_config()
+    cfg.root = db_path.parent
+
     def open_ripperr() -> Ripperr:
-        return Ripperr(
-            Config(root=db_path.parent), store=Store(db_path), log=lambda _: None
-        )
+        return Ripperr(cfg, store=Store(db_path), log=lambda _: None)
 
     class Handler(BaseHTTPRequestHandler):
         server_version = "ripperr/0.1"
@@ -308,18 +309,18 @@ def _integer(query, name: str, default: int, minimum: int, maximum: int | None =
 
 
 def serve(db_path: Path, host: str = "127.0.0.1", port: int = 8765,
-          token: str | None = None, emit_current: bool = False) -> None:
+          token: str | None = None, emit_current: bool = False,
+          cfg: Config | None = None) -> None:
     if not _loopback(host):
         raise ValueError(
             "--host must be loopback; use a TLS reverse proxy or tunnel for remote consumers"
         )
+    cfg = cfg or default_config()
+    cfg.root = db_path.parent
     if emit_current:
-        store = Store(db_path)
-        try:
-            store.emit_current()
-        finally:
-            store.close()
-    server = ThreadingHTTPServer((host, port), make_handler(db_path, token))
+        with Ripperr(cfg, log=lambda _: None) as rip:
+            rip.store.emit_current()
+    server = ThreadingHTTPServer((host, port), make_handler(db_path, token, cfg))
     print(f"ripperr serving on http://{host}:{server.server_port}")
     try:
         server.serve_forever()

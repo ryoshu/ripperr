@@ -150,4 +150,6 @@ class Config:
             d.mkdir(parents=True, exist_ok=True)
 
 
-CONFIG = Config()
+def default_config() -> Config:
+    """Build the process default only when a caller actually needs it."""
+    return Config()
