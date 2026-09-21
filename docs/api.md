@@ -81,8 +81,7 @@ new ──▶ downloaded ──▶ done
 rewritten: after `process` finishes an episode, and after every `remerge`. Status
 changes, such as `new` to `downloaded`, and metadata refreshes from `sync` do not
 change it. `merged_at` is the time of the last rewrite. `updated_at` moves on any
-change, including a metadata refresh, so a title fix shows up in
-`episodes(updated_since=...)` with the same `revision`.
+change, including processing bookkeeping and metadata refreshes.
 
 Writing a transcript, bumping the revision, storing the corrections and marking the
 episode `done` (clearing `error`) happen in one transaction, so a failure part-way
@@ -91,12 +90,21 @@ under one snapshot (see "Concurrency and consistency"), so what it returns comes
 from a single revision. Two separate calls, such as `episodes()` then
 `transcript()`, are two snapshots: compare `revision` between them.
 
-A poller should:
+For consumers that need a durable synchronization stream, `changes(after, limit)`
+is the canonical contract. It provides an ordered cursor and includes metadata,
+transcript, and deleted events. `episodes(updated_since=...)` is a local polling
+convenience: it is inclusive, can repeat rows, and also sees internal status or
+audio bookkeeping that does not create a change event.
 
-1. Call `episodes(status="done", updated_since=<last poll time>)`.
-2. For each episode, compare `revision` with the one it stored.
-3. If it differs, re-read `transcript(guid)` and replace whatever it derived from
-   the old turns.
+A change-feed consumer should:
+
+1. Call `changes(after=<last sequence>)`.
+2. For metadata or transcript events, re-read `episode_guid` and compare the
+   returned revision with the one it stored.
+3. For transcript revisions, re-read `transcript(guid)` and replace whatever it
+   derived from the old turns.
+4. Treat `deleted` events as removal notifications; the episode endpoint will
+   return 404 afterward.
 
 Because `updated_since` is inclusive, the same episode can appear on consecutive
 polls; comparing revisions makes that harmless. Timestamps have second resolution,
