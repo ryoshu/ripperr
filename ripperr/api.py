@@ -155,6 +155,10 @@ class Ripperr:
     def changes(self, after: int = 0, limit: int = 100) -> list[dict]:
         return self.store.changes(after, limit)
 
+    def emit_current(self) -> int:
+        """Queue the current revision of every completed episode for bootstrap."""
+        return self.store.emit_current()
+
     # ---- internals -------------------------------------------------------
 
     def _episode(self, ref: str | int) -> Episode:

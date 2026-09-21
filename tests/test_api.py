@@ -77,6 +77,14 @@ def test_episodes_filters_by_status_and_update_time(tmp_path):
     assert rip.episodes(updated_since="2999-01-01T00:00:00+00:00") == []
 
 
+def test_emit_current_is_available_through_public_api(tmp_path):
+    rip, guid = make(tmp_path)
+    rip.remerge(guid, glossary=[])
+    assert rip.emit_current() == 1
+    assert rip.changes()[-1]["kind"] == "transcript"
+    rip.close()
+
+
 def test_public_feed_management_and_episode_pagination(tmp_path):
     rip = Ripperr(Config(root=tmp_path), log=lambda _: None)
     feed = rip.add_feed("http://feed", "Old")

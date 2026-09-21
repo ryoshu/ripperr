@@ -323,7 +323,7 @@ def serve(db_path: Path, host: str = "127.0.0.1", port: int = 8765,
     cfg.root = db_path.parent
     if emit_current:
         with Ripperr(cfg, log=lambda _: None) as rip:
-            rip.store.emit_current()
+            rip.emit_current()
     server = ThreadingHTTPServer((host, port), make_handler(db_path, token, cfg))
     print(f"ripperr serving on http://{host}:{server.server_port}")
     try:

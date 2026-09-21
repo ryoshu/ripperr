@@ -58,6 +58,7 @@ were the feed's own ids.
 | `stats() -> dict[str, int]` | Episode count per status. |
 | `change_seq() -> int` | Highest committed change-feed sequence number. |
 | `changes(after=0, limit=100) -> list[dict]` | Returns cursor-based transcript and metadata change events in ascending sequence order. |
+| `emit_current() -> int` | Queues the current revision of every completed episode for a new consumer's bootstrap. |
 
 ## Episode lifecycle
 
