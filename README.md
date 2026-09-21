@@ -140,7 +140,7 @@ CUDA; set `RIPPERR_DEVICE=cuda` when the CUDA runtime is installed.
 | `glossary.py` | phonetic respelling of names from a supplied term list |
 | `audio.py` | ffmpeg normalization to 16 kHz mono WAV |
 | `asr.py` | ASR backends, word-level timestamp normalization |
-| `diarize.py` | diarization backends, segment normalization |
+| `diarize.py` | diarization backends, segment and embedding normalization |
 | `merge.py` | word→speaker assignment, turn grouping |
 | `pipeline.py` | orchestration, per-stage caching |
 | `store.py` | SQLite schema, FTS5 search |
@@ -169,9 +169,9 @@ current one.
   aliases because the shape has moved between versions. If it comes back empty,
   print one raw segment and add the key you see.
 - **Speaker labels are per-episode.** `SPEAKER_00` in one episode has no relation
-  to `SPEAKER_00` in the next. Mapping labels to real names needs a speaker
-  embedding store keyed to known voices — a natural next step, since CAM++
-  embeddings are already computed and discarded.
+  to `SPEAKER_00` in the next. On Mac/Senko, the pipeline now stores one CAM++
+  centroid per episode speaker as a local `SpeakerEmbedding` sample. Matching
+  those samples to named profiles is not automatic yet.
 - **Overlapping speech** degrades attribution, as it does in every system.
 - **Hallucination on silence.** `condition_on_previous_text=False` limits runaway
   repetition loops but doesn't eliminate them on long musical interludes.

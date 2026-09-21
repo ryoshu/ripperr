@@ -10,16 +10,17 @@ so another backend only has to provide these same methods.
 from __future__ import annotations
 
 import hashlib
+import json
 import sqlite3
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
 from pathlib import Path
-from typing import Iterator, Sequence
+from typing import Iterator, Mapping, Sequence
 
-from .models import Change, Correction, Episode, Feed, Hit, SpeakerName, Turn
+from .models import Change, Correction, Episode, Feed, Hit, SpeakerEmbedding, SpeakerName, Turn
 
-SCHEMA_VERSION = 6
+SCHEMA_VERSION = 7
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS feeds (
@@ -79,6 +80,14 @@ CREATE TABLE IF NOT EXISTS speaker_names (
     name         TEXT NOT NULL,
     method       TEXT NOT NULL DEFAULT 'manual',
     confidence   REAL,
+    updated_at   TEXT NOT NULL,
+    PRIMARY KEY (episode_guid, speaker)
+);
+
+CREATE TABLE IF NOT EXISTS speaker_embeddings (
+    episode_guid TEXT NOT NULL REFERENCES episodes(guid) ON DELETE CASCADE,
+    speaker      TEXT NOT NULL,
+    embedding    TEXT NOT NULL,
     updated_at   TEXT NOT NULL,
     PRIMARY KEY (episode_guid, speaker)
 );
@@ -235,6 +244,19 @@ class Store:
             cols = {r["name"] for r in self.conn.execute("PRAGMA table_info(episodes)")}
             if "diarization_key" not in cols:
                 self.conn.execute("ALTER TABLE episodes ADD COLUMN diarization_key TEXT")
+
+        # Version 7 adds the local Mac/Senko voice samples. The vectors are JSON
+        # so the base install can read them without NumPy.
+        if version < 7:
+            self.conn.execute(
+                """CREATE TABLE IF NOT EXISTS speaker_embeddings (
+                    episode_guid TEXT NOT NULL REFERENCES episodes(guid) ON DELETE CASCADE,
+                    speaker      TEXT NOT NULL,
+                    embedding    TEXT NOT NULL,
+                    updated_at   TEXT NOT NULL,
+                    PRIMARY KEY (episode_guid, speaker)
+                )"""
+            )
 
     def close(self) -> None:
         self.conn.close()
@@ -500,6 +522,22 @@ class Store:
         )
         return [SpeakerName(**dict(row)) for row in rows]
 
+    def speaker_embeddings(self, episode_guid: str) -> list[SpeakerEmbedding]:
+        rows = self.conn.execute(
+            "SELECT episode_guid, speaker, embedding, updated_at "
+            "FROM speaker_embeddings WHERE episode_guid = ? ORDER BY speaker",
+            (episode_guid,),
+        )
+        return [
+            SpeakerEmbedding(
+                episode_guid=row["episode_guid"],
+                speaker=row["speaker"],
+                embedding=tuple(json.loads(row["embedding"])),
+                updated_at=row["updated_at"],
+            )
+            for row in rows
+        ]
+
     def set_speaker_name(
         self,
         episode_guid: str,
@@ -579,6 +617,7 @@ class Store:
         corrections: Sequence[Correction] = (),
         *,
         diarization_key: str | None = None,
+        speaker_embeddings: Mapping[str, Sequence[float]] | None = None,
     ) -> None:
         """Swap in a new transcript, bump the episode's revision and mark it done,
         all in one transaction: a reader never sees a transcript on an episode that
@@ -621,6 +660,20 @@ class Store:
                 c.execute(
                     "DELETE FROM speaker_names WHERE episode_guid = ?",
                     (episode["guid"],),
+                )
+            if speaker_embeddings is not None:
+                now = _now()
+                c.execute(
+                    "DELETE FROM speaker_embeddings WHERE episode_guid = ?",
+                    (episode["guid"],),
+                )
+                c.executemany(
+                    "INSERT INTO speaker_embeddings "
+                    "(episode_guid, speaker, embedding, updated_at) VALUES (?, ?, ?, ?)",
+                    [
+                        (episode["guid"], speaker, json.dumps([float(x) for x in embedding]), now)
+                        for speaker, embedding in speaker_embeddings.items()
+                    ],
                 )
             c.execute("DELETE FROM corrections WHERE episode_id = ?", (episode_id,))
             c.executemany(

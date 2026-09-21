@@ -21,12 +21,12 @@ from pathlib import Path
 
 from .config import Config, default_config
 from .glossary import load as load_glossary
-from .models import Change, Episode, Feed, Hit, SpeakerName, Transcript
+from .models import Change, Episode, Feed, Hit, SpeakerEmbedding, SpeakerName, Transcript
 from .pipeline import Log, Processor, remerge, sync_feeds
 from .store import Store
 
 
-_CACHE_FILE = re.compile(r"^(?P<episode_key>[0-9a-f]{12})\.(?:asr|diar)-[0-9a-f]{12}\.json$")
+_CACHE_FILE = re.compile(r"^(?P<episode_key>[0-9a-f]{12})\.(?:asr|diar|embed)-[0-9a-f]{12}\.json$")
 
 
 class ProcessingBusyError(RuntimeError):
@@ -96,7 +96,7 @@ class Ripperr:
             current_paths = {
                 self.cfg.raw_path(episode.guid, kind).resolve()
                 for episode in episodes
-                for kind in ("asr", "diar")
+                for kind in ("asr", "diar", "embed")
             }
             if not self.cfg.raw_dir.exists():
                 return 0
@@ -191,6 +191,10 @@ class Ripperr:
 
     def speaker_names(self, ref: str | int) -> list[SpeakerName]:
         return self.store.speaker_names(self._episode(ref).guid)
+
+    def speaker_embeddings(self, ref: str | int) -> list[SpeakerEmbedding]:
+        """Return locally stored per-episode voice samples, when available."""
+        return self.store.speaker_embeddings(self._episode(ref).guid)
 
     def set_speaker_name(self, ref: str | int, speaker: str, name: str) -> SpeakerName:
         ep = self._episode(ref)

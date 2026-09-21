@@ -58,6 +58,16 @@ class Diarizer:
             ] if annotation is not None else []
         return normalize_segments(raw)
 
+    def run_with_embeddings(
+        self, wav_path: Path
+    ) -> tuple[list[dict[str, Any]], dict[str, list[float]]]:
+        """Return normalized segments and Senko's per-speaker CAM++ centroids."""
+        if self.backend != "senko":
+            raise RuntimeError("speaker embeddings require the senko backend")
+        result = self._impl.diarize(str(wav_path), generate_colors=False)
+        raw = result.get("merged_segments") or result.get("segments") or []
+        return normalize_segments(raw), normalize_embeddings(result.get("speaker_centroids"))
+
 
 def backend_name(backend: str = "auto") -> str:
     return resolve_diarization_backend(backend)
@@ -126,3 +136,14 @@ def _label(speaker: Any) -> str:
 
 def speaker_count(segments: list[dict[str, Any]]) -> int:
     return len({s["speaker"] for s in segments})
+
+
+def normalize_embeddings(centroids: Any) -> dict[str, list[float]]:
+    """Convert Senko/Numpy centroid values into JSON-safe speaker vectors."""
+    if not isinstance(centroids, dict):
+        return {}
+    result = {}
+    for speaker, embedding in centroids.items():
+        values = embedding.tolist() if hasattr(embedding, "tolist") else embedding
+        result[_label(speaker)] = [float(value) for value in values]
+    return result

@@ -114,8 +114,8 @@ class Config:
 
     def raw_path(self, guid: str, kind: str) -> Path:
         """Cache path keyed by episode and the model configuration for the stage."""
-        if kind not in {"asr", "diar"}:
-            raise ValueError("cache kind must be asr or diar")
+        if kind not in {"asr", "diar", "embed"}:
+            raise ValueError("cache kind must be asr, diar, or embed")
         episode_key = self.episode_key(guid)
         config = self._cache_config(kind)
         config_key = hashlib.sha256(json.dumps(

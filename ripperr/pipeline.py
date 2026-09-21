@@ -12,7 +12,7 @@ import os
 import tempfile
 import traceback
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, Mapping, Sequence
 
 from . import asr, audio, diarize, feeds, glossary, merge
 from .config import Config
@@ -102,6 +102,8 @@ def merge_and_save(
     segments: list[dict[str, Any]],
     terms: list[str],
     log: Log,
+    *,
+    speaker_embeddings: Mapping[str, Sequence[float]] | None = None,
 ) -> tuple[int, int]:
     """Apply the glossary, merge words with speakers, store the transcript.
     Returns (turns, words)."""
@@ -120,6 +122,7 @@ def merge_and_save(
         turns,
         corrections,
         diarization_key=_diarization_key(segments),
+        speaker_embeddings=speaker_embeddings,
     )  # also marks the episode done
     return len(turns), len(words)
 
@@ -160,6 +163,7 @@ class Processor:
             wav = self._ensure_audio(store, episode)
             asr_result = self._ensure_asr(episode, wav, force)
             segments = self._ensure_diarization(episode, wav, force)
+            embeddings = _read_embedding_cache(self.cfg.raw_path(episode.guid, "embed"))
 
             n_turns, n_words = merge_and_save(
                 store,
@@ -169,6 +173,7 @@ class Processor:
                 segments,
                 self.terms,
                 self.log,
+                speaker_embeddings=embeddings,
             )
         except Exception as exc:  # noqa: BLE001
             self.log(f"  ! failed: {exc}")
@@ -234,8 +239,12 @@ class Processor:
             if cached.exists():
                 self.log("  diarization cache unreadable, redoing")
         self.log("  diarizing…")
-        segments = self.diarizer.run(wav)
+        if getattr(self.diarizer, "backend", None) == "senko":
+            segments, embeddings = self.diarizer.run_with_embeddings(wav)
+        else:
+            segments, embeddings = self.diarizer.run(wav), {}
         _write_cache(cached, segments)
+        _write_cache(self.cfg.raw_path(episode.guid, "embed"), embeddings)
         return segments
 
 
@@ -249,4 +258,21 @@ def remerge(
     if asr_result is None or segments is None:
         raise FileNotFoundError(f"no usable cached model output for episode {episode.guid}")
 
-    merge_and_save(store, cfg, episode, asr_result, segments, terms, log)
+    embeddings = _read_embedding_cache(cfg.raw_path(episode.guid, "embed"))
+    merge_and_save(
+        store,
+        cfg,
+        episode,
+        asr_result,
+        segments,
+        terms,
+        log,
+        speaker_embeddings=embeddings,
+    )
+
+
+def _read_embedding_cache(path: Path) -> dict[str, list[float]] | None:
+    value = _read_cache(path)
+    if not isinstance(value, dict):
+        return None
+    return value

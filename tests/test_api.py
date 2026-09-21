@@ -98,6 +98,20 @@ def test_speaker_names_require_a_current_turn_label(tmp_path):
     rip.close()
 
 
+def test_speaker_embeddings_round_trip(tmp_path):
+    rip, guid = make(tmp_path)
+    rip.store.replace_turns(
+        1,
+        [Turn(0, "SPEAKER_01", 0, 1, "hello")],
+        speaker_embeddings={"SPEAKER_01": [0.1, -0.2, 0.3]},
+    )
+
+    [sample] = rip.speaker_embeddings(guid)
+    assert sample.speaker == "SPEAKER_01"
+    assert sample.embedding == (0.1, -0.2, 0.3)
+    rip.close()
+
+
 def test_diarization_recompute_clears_speaker_names(tmp_path, monkeypatch):
     rip, guid = make(tmp_path)
     rip.remerge(guid, glossary=[])
@@ -289,7 +303,7 @@ def test_old_database_is_migrated(tmp_path):
     assert store.add_episode(1, "g", "T", None, "a") is False  # not duplicated on the next sync
     assert store.add_episode(1, "new", "N", None, "b") is True
     assert store.episode(public_guid("u", "new")).source_guid == "new"
-    assert store.conn.execute("PRAGMA user_version").fetchone()[0] == 6
+    assert store.conn.execute("PRAGMA user_version").fetchone()[0] == 7
 
 
 def test_current_schema_skips_migration_on_reopen(tmp_path, monkeypatch):
@@ -324,7 +338,7 @@ def test_schema_migrates_old_change_constraint(tmp_path):
     store = Store(db)
     Store._insert_change(store.conn, "episode", 1, "deleted")
     assert store.changes()[0].kind == "deleted"
-    assert store.conn.execute("PRAGMA user_version").fetchone()[0] == 6
+    assert store.conn.execute("PRAGMA user_version").fetchone()[0] == 7
     store.close()
 
 
@@ -351,7 +365,7 @@ def test_v2_deleted_events_seed_tombstones(tmp_path):
     assert store.conn.execute(
         "SELECT revision FROM episode_tombstones WHERE guid = 'episode'"
     ).fetchone()[0] == 3
-    assert store.conn.execute("PRAGMA user_version").fetchone()[0] == 6
+    assert store.conn.execute("PRAGMA user_version").fetchone()[0] == 7
     store.close()
 
 

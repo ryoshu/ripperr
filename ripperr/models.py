@@ -63,6 +63,14 @@ class SpeakerName:
 
 
 @dataclass(frozen=True)
+class SpeakerEmbedding:
+    episode_guid: str
+    speaker: str
+    embedding: tuple[float, ...]
+    updated_at: str  # ISO 8601 UTC
+
+
+@dataclass(frozen=True)
 class Hit:
     episode_id: int
     guid: str
