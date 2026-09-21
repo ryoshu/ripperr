@@ -7,18 +7,15 @@ since a Whisper segment routinely spans a speaker change.
 
 from __future__ import annotations
 
-import platform
 from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
+from .config import resolve_asr_backend
+
 
 def backend_name(backend: str = "auto") -> str:
-    if backend == "auto":
-        return "mlx" if _apple_silicon() else "faster-whisper"
-    if backend not in {"mlx", "faster-whisper"}:
-        raise ValueError("RIPPERR_ASR_BACKEND must be auto, mlx, or faster-whisper")
-    return backend
+    return resolve_asr_backend(backend)
 
 
 def transcribe(
@@ -84,10 +81,6 @@ def _faster_segment(segment: Any) -> dict[str, Any]:
         "text": segment.text,
         "words": words,
     }
-
-
-def _apple_silicon() -> bool:
-    return platform.system() == "Darwin" and platform.machine().lower() in {"arm64", "aarch64"}
 
 
 def flatten_words(result: dict[str, Any]) -> list[dict[str, Any]]:

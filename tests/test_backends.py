@@ -3,16 +3,26 @@ from types import SimpleNamespace
 import pytest
 
 from ripperr import asr, diarize
+from ripperr import config
 
 
 def test_auto_selects_linux_backends(monkeypatch):
-    monkeypatch.setattr(asr.platform, "system", lambda: "Linux")
-    monkeypatch.setattr(asr.platform, "machine", lambda: "x86_64")
-    monkeypatch.setattr(diarize.platform, "system", lambda: "Linux")
-    monkeypatch.setattr(diarize.platform, "machine", lambda: "x86_64")
+    monkeypatch.setattr(config.platform, "system", lambda: "Linux")
+    monkeypatch.setattr(config.platform, "machine", lambda: "x86_64")
 
     assert asr.backend_name() == "faster-whisper"
     assert diarize.backend_name() == "pyannote"
+
+
+def test_config_resolves_auto_once(monkeypatch, tmp_path):
+    monkeypatch.setattr(config.platform, "system", lambda: "Darwin")
+    monkeypatch.setattr(config.platform, "machine", lambda: "arm64")
+
+    cfg = config.Config(root=tmp_path)
+
+    assert cfg.asr_backend == "mlx"
+    assert cfg.diarization_backend == "senko"
+    assert cfg.asr_model == "mlx-community/whisper-large-v3-turbo"
 
 
 def test_faster_whisper_segments_match_merge_contract():

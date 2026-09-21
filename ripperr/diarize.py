@@ -10,9 +10,10 @@ The diarizer holds model weights, so build it once and reuse it across episodes.
 
 from __future__ import annotations
 
-import platform
 from pathlib import Path
 from typing import Any
+
+from .config import resolve_diarization_backend
 
 _START_KEYS = ("start", "start_time", "begin")
 _END_KEYS = ("end", "stop", "end_time")
@@ -59,11 +60,7 @@ class Diarizer:
 
 
 def backend_name(backend: str = "auto") -> str:
-    if backend == "auto":
-        return "senko" if _apple_silicon() else "pyannote"
-    if backend not in {"senko", "pyannote"}:
-        raise ValueError("RIPPERR_DIARIZATION_BACKEND must be auto, senko, or pyannote")
-    return backend
+    return resolve_diarization_backend(backend)
 
 
 def _pyannote_annotation(result: Any) -> Any:
@@ -77,10 +74,6 @@ def _pyannote_annotation(result: Any) -> Any:
         if annotation is not None:
             return annotation
     return None
-
-
-def _apple_silicon() -> bool:
-    return platform.system() == "Darwin" and platform.machine().lower() in {"arm64", "aarch64"}
 
 
 def normalize_segments(raw: Any) -> list[dict[str, Any]]:

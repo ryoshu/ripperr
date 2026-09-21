@@ -29,10 +29,28 @@ def _env_path(name: str, default: Path) -> Path:
     return Path(raw).expanduser() if raw else default
 
 
-def _default_asr_model(backend: str | None = None) -> str:
-    backend = backend or os.environ.get("RIPPERR_ASR_BACKEND", "auto")
-    apple = platform.system() == "Darwin" and platform.machine().lower() in {"arm64", "aarch64"}
-    return "mlx-community/whisper-large-v3-turbo" if backend == "mlx" or (backend == "auto" and apple) else "large-v3"
+def is_apple_silicon() -> bool:
+    return platform.system() == "Darwin" and platform.machine().lower() in {"arm64", "aarch64"}
+
+
+def resolve_asr_backend(backend: str = "auto") -> str:
+    if backend == "auto":
+        return "mlx" if is_apple_silicon() else "faster-whisper"
+    if backend not in {"mlx", "faster-whisper"}:
+        raise ValueError("RIPPERR_ASR_BACKEND must be auto, mlx, or faster-whisper")
+    return backend
+
+
+def resolve_diarization_backend(backend: str = "auto") -> str:
+    if backend == "auto":
+        return "senko" if is_apple_silicon() else "pyannote"
+    if backend not in {"senko", "pyannote"}:
+        raise ValueError("RIPPERR_DIARIZATION_BACKEND must be auto, senko, or pyannote")
+    return backend
+
+
+def _default_asr_model(backend: str) -> str:
+    return "mlx-community/whisper-large-v3-turbo" if backend == "mlx" else "large-v3"
 
 
 @dataclass
@@ -69,6 +87,8 @@ class Config:
     keep_audio: bool = field(default_factory=lambda: os.environ.get("RIPPERR_KEEP_AUDIO", "1") != "0")
 
     def __post_init__(self) -> None:
+        self.asr_backend = resolve_asr_backend(self.asr_backend)
+        self.diarization_backend = resolve_diarization_backend(self.diarization_backend)
         if self.asr_model is None:
             self.asr_model = _default_asr_model(self.asr_backend)
 
@@ -104,10 +124,8 @@ class Config:
         return self.raw_dir / f"{episode_key}.{kind}-{config_key}.json"
 
     def _cache_config(self, kind: str) -> dict[str, object]:
-        from . import asr, diarize
-
         if kind == "asr":
-            backend = asr.backend_name(self.asr_backend)
+            backend = self.asr_backend
             return {
                 "version": _CACHE_FORMAT_VERSION,
                 "backend": backend,
@@ -118,7 +136,7 @@ class Config:
                 "device": self.device,
                 "language": self.language,
             }
-        backend = diarize.backend_name(self.diarization_backend)
+        backend = self.diarization_backend
         return {
             "version": _CACHE_FORMAT_VERSION,
             "backend": backend,
