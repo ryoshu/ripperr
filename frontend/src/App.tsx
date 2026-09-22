@@ -564,9 +564,12 @@ function App() {
       <header className="topbar">
         <button className="brand" type="button" onClick={() => go("/")}><span className="brand-mark">r</span><span>ripperr</span></button>
         <nav className="topnav" aria-label="Primary navigation">
-          {([ ["/", "Overview"], ["/feeds", "Feeds"], ["/episodes", "Episodes"] ] as const).map(([path, label]) => <Button key={path} size="sm" variant={location.section === (path === "/" ? "overview" : path.slice(1) as Section) ? "solid" : "light"} onPress={() => go(path)}>{label}</Button>)}
+          {([ ["/", "Overview"], ["/feeds", "Feeds"], ["/episodes", "Episodes"] ] as const).map(([path, label]) => {
+            const active = location.section === (path === "/" ? "overview" : path.slice(1) as Section)
+            return <Button key={path} size="sm" className={`topnav-button${active ? " is-active" : ""}`} variant={active ? "solid" : "light"} onPress={() => go(path)}>{label}</Button>
+          })}
         </nav>
-        <Button size="sm" variant="flat" onPress={() => void reload()} isLoading={loading}>Refresh</Button>
+        <Button size="sm" className="topbar-refresh" variant="flat" onPress={() => void reload()} isLoading={loading}>Refresh</Button>
       </header>
       <main className="main-content">
         <ErrorNotice message={error} />
