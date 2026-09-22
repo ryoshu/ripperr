@@ -105,6 +105,37 @@ def cmd_remerge(args, rip: Ripperr) -> int:
     return 0
 
 
+def cmd_calibrate(args, rip: Ripperr) -> int:
+    from .calibration import calibrate_identity
+
+    feed = rip.feed(args.feed) if args.feed is not None else next(
+        (feed for feed in rip.feeds() if "on the couch" in (feed.title or "").casefold()),
+        None,
+    )
+    if feed is None:
+        print("no matching feed; pass --feed <id>", file=sys.stderr)
+        return 1
+
+    episodes = rip.episodes(status="done")
+    episodes = [episode for episode in episodes if episode.feed_id == feed.id]
+    names = {episode.guid: rip.speaker_names(episode.guid) for episode in episodes}
+    embeddings = {episode.guid: rip.speaker_embeddings(episode.guid) for episode in episodes}
+    try:
+        result = calibrate_identity(episodes, names, embeddings, args.identity)
+    except ValueError as exc:
+        print(f"calibration unavailable: {exc}", file=sys.stderr)
+        return 1
+
+    print(f"identity: {result.identity}")
+    print(f"episodes: {result.episode_count}")
+    print(f"labeled samples: {result.sample_count} ({result.positive_count} positive, {result.negative_count} other)")
+    print(f"raw margin accuracy: {result.raw_accuracy:.1%}")
+    print(f"leave-one-episode-out accuracy: {result.leave_one_out_accuracy:.1%}")
+    print(f"leave-one-episode-out Brier score: {result.leave_one_out_brier:.3f}")
+    print(f"probability model: sigmoid({result.intercept:.3f} + {result.slope:.3f} × identity margin)")
+    return 0
+
+
 def cmd_serve(args, rip: Ripperr) -> int:
     from .server import serve
 
@@ -148,6 +179,11 @@ def build_parser() -> argparse.ArgumentParser:
     rm = sub.add_parser("remerge", help="redo speaker merge from cached model output")
     rm.add_argument("episode", help="episode id or guid")
     rm.set_defaults(func=cmd_remerge)
+
+    cal = sub.add_parser("calibrate", help="fit a provisional speaker identity probability")
+    cal.add_argument("--feed", type=int, help="feed id; defaults to the On The Couch feed")
+    cal.add_argument("--identity", default="Sigmund Bloom")
+    cal.set_defaults(func=cmd_calibrate)
 
     sv = sub.add_parser("serve", help="serve the transcript change feed over HTTP")
     sv.add_argument("--host", default="127.0.0.1")
