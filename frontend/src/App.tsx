@@ -14,8 +14,9 @@ import {
   ModalHeader,
   Spinner,
   Textarea,
+  Tooltip,
 } from "@heroui/react"
-import { useCallback, useEffect, useMemo, useState, type FormEvent } from "react"
+import { useCallback, useEffect, useMemo, useState, type FormEvent, type ReactNode } from "react"
 import { useRef } from "react"
 import {
   addFeed,
@@ -208,6 +209,10 @@ function ErrorNotice({ message }: { message: string | null }) {
 
 function Loading() {
   return <div className="loading"><Spinner size="sm" /> Loading…</div>
+}
+
+function CloseIcon() {
+  return <svg aria-hidden="true" className="icon" viewBox="0 0 20 20" fill="none"><path d="m5 5 10 10M15 5 5 15" stroke="currentColor" strokeLinecap="round" strokeWidth="1.8" /></svg>
 }
 
 function StatCard({ label, value, tone = "" }: { label: string; value: number | string; tone?: string }) {
@@ -518,17 +523,21 @@ function EpisodesView({
   )
 }
 
-function Metadata({ episode, onControllerReady, onTimeUpdate }: { episode: EpisodeDetail; onControllerReady: (controller: MediaController | null) => void; onTimeUpdate: (seconds: number) => void }) {
+function Metadata({ episode, speakerEditor, onControllerReady, onTimeUpdate }: { episode: EpisodeDetail; speakerEditor: ReactNode; onControllerReady: (controller: MediaController | null) => void; onTimeUpdate: (seconds: number) => void }) {
   return (
-    <dl className="metadata">
-      <div><dt>Feed</dt><dd>{episode.feed.title || episode.feed.url}</dd></div>
-      <div><dt>Published</dt><dd>{formatDate(episode.published)}</dd></div>
-      <div><dt>Duration</dt><dd>{formatDuration(episode.duration)}</dd></div>
-      <div><dt>Updated</dt><dd>{formatDate(episode.updated_at)}</dd></div>
-      <div><dt>Revision</dt><dd>{episode.revision}</dd></div>
-      {episode.source_url && <div><dt>Source</dt><dd><Link href={episode.source_url} isExternal showAnchorIcon>{episode.source_url}</Link></dd></div>}
-      {episode.audio_url && <div className="metadata-media"><dt>Listen</dt><dd><SyncedMedia audioUrl={episode.audio_url} title={titleFor(episode)} onControllerReady={onControllerReady} onTimeUpdate={onTimeUpdate} /></dd></div>}
-    </dl>
+    <div className={`metadata-layout${episode.audio_url ? " has-media" : ""}`}>
+      {episode.audio_url && <div className="metadata-media"><p className="metadata-label">Listen</p><SyncedMedia audioUrl={episode.audio_url} title={titleFor(episode)} onControllerReady={onControllerReady} onTimeUpdate={onTimeUpdate} /></div>}
+      <div className="metadata-side">
+        <dl className="metadata">
+          <div><dt>Published</dt><dd>{formatDate(episode.published)}</dd></div>
+          <div><dt>Duration</dt><dd>{formatDuration(episode.duration)}</dd></div>
+          <div><dt>Updated</dt><dd>{formatDate(episode.updated_at)}</dd></div>
+          <div><dt>Revision</dt><dd>{episode.revision}</dd></div>
+          {episode.source_url && <div className="metadata-source"><dt>Source</dt><dd><Link href={episode.source_url} isExternal showAnchorIcon>{episode.source_url}</Link></dd></div>}
+        </dl>
+        {speakerEditor}
+      </div>
+    </div>
   )
 }
 
@@ -560,6 +569,7 @@ function SpeakerEditor({ episode, onChange }: { episode: EpisodeDetail; onChange
   }
 
   async function clear(speaker: string) {
+    if (!window.confirm(`Clear the display name for ${speaker}?`)) return
     setSaving(speaker)
     setError(null)
     try {
@@ -573,21 +583,21 @@ function SpeakerEditor({ episode, onChange }: { episode: EpisodeDetail; onChange
   }
 
   return (
-    <Card shadow="sm" className="panel">
-      <CardHeader className="panel-header"><div><h2>Speaker names</h2><p className="muted">Episode-scoped display names; raw diarization labels stay unchanged.</p></div><Chip variant="flat">{names.length} mapped</Chip></CardHeader>
+    <section className="speaker-editor">
+      <div className="speaker-editor-heading"><div><h2>Speaker names</h2><p className="muted">Episode-scoped display names; raw diarization labels stay unchanged.</p></div><Chip variant="flat">{names.length} mapped</Chip></div>
       <Divider />
-      <CardBody>
+      <div className="speaker-editor-body">
         <ErrorNotice message={error} />
         {labels.length ? <div className="speaker-list">{labels.map((speaker) => (
           <div className="speaker-row" key={speaker}>
             <span className="speaker-label">{speaker}</span>
             <Input aria-label={`Display name for ${speaker}`} placeholder="Display name" value={drafts[speaker] || ""} onValueChange={(value) => setDrafts((current) => ({ ...current, [speaker]: value }))} />
             <Button size="sm" color="primary" isLoading={saving === speaker} isDisabled={saving !== null} onPress={() => void save(speaker)}>Save</Button>
-            {mapped[speaker] && <Button size="sm" variant="light" color="danger" isDisabled={saving !== null} onPress={() => void clear(speaker)}>Clear</Button>}
+            {mapped[speaker] && <Tooltip content={`Clear name for ${speaker}`}><Button className="speaker-clear" size="sm" variant="light" color="danger" isIconOnly aria-label={`Clear name for ${speaker}`} isDisabled={saving !== null} onPress={() => void clear(speaker)}><CloseIcon /></Button></Tooltip>}
           </div>
         ))}</div> : <p className="empty">No speaker labels are available yet.</p>}
-      </CardBody>
-    </Card>
+      </div>
+    </section>
   )
 }
 
@@ -616,13 +626,11 @@ function EpisodeDetailView({ episode, error, onBack, onReload }: { episode: Epis
       <Button variant="light" className="back-button" onPress={onBack}>← Back to episodes</Button>
       <ErrorNotice message={error} />
       <div className="page-heading detail-heading">
-        <div><p className="eyebrow">Episode detail</p><h1>{titleFor(episode)}</h1><p className="mono muted guid">{episode.guid}</p></div>
+        <div><p className="eyebrow">{episode.feed.title || episode.feed.url}</p><h1>{titleFor(episode)}</h1></div>
         <Chip color={statusColor(episode.status)} variant="flat">{episode.status}</Chip>
       </div>
 
-      <Card shadow="sm" className="panel"><CardBody><Metadata episode={episode} onControllerReady={handleControllerReady} onTimeUpdate={handleTimeUpdate} /></CardBody></Card>
-
-      <SpeakerEditor episode={{ ...episode, speaker_names: names }} onChange={setNames} />
+      <Card shadow="sm" className="panel"><CardBody><Metadata episode={episode} speakerEditor={<SpeakerEditor episode={{ ...episode, speaker_names: names }} onChange={setNames} />} onControllerReady={handleControllerReady} onTimeUpdate={handleTimeUpdate} /></CardBody></Card>
 
       <Card shadow="sm" className="panel transcript-panel">
         <CardHeader className="panel-header"><div><h2>Transcript</h2><p className="muted">{episode.turns.length} turns · click a turn to jump</p></div><Button size="sm" variant="light" onPress={() => void onReload()}>Refresh</Button></CardHeader>
