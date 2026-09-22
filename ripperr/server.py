@@ -57,9 +57,10 @@ def make_handler(cfg: Config, token: str | None = None):
             self._dispatch("DELETE", write=True)
 
         def _dispatch(self, method: str, *, write: bool = False) -> None:
-            if not self._authorized(write=write):
-                return
             parsed = urlparse(self.path)
+            speaker_write = write and _is_speaker_path(parsed.path)
+            if not self._authorized(write=write and not speaker_write):
+                return
             try:
                 rip = open_ripperr()
                 try:
@@ -343,6 +344,10 @@ def _speaker_path(path: str) -> tuple[str, str]:
     if not guid or not speaker or "/" in speaker:
         raise ValueError("speaker path must include an episode and speaker")
     return unquote(guid), unquote(speaker)
+
+
+def _is_speaker_path(path: str) -> bool:
+    return path.startswith("/v1/episodes/") and "/speakers/" in path
 
 
 def _integer(query, name: str, default: int, minimum: int, maximum: int | None = None) -> int:

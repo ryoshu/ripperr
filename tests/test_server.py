@@ -293,6 +293,36 @@ def test_feed_management_requires_token_even_on_loopback(tmp_path):
         thread.join()
 
 
+def test_episode_speaker_names_can_be_managed_without_token_on_loopback(tmp_path):
+    db = tmp_path / "ripperr.db"
+    store = Store(db)
+    feed = store.add_feed("https://feed")
+    store.add_episode(feed.id, "one", "One", None, "https://audio")
+    guid = store.episode_by_id(1).guid
+    store.replace_turns(1, [Turn(0, "SPEAKER_00", 0, 1, "hello")])
+    store.close()
+
+    server, thread = _server(db)
+    try:
+        status, _, body = _request(
+            server,
+            "PUT",
+            f"/v1/episodes/{guid}/speakers/SPEAKER_00",
+            {"name": "Host"},
+        )
+        assert status == 200 and body["speaker_name"]["name"] == "Host"
+
+        status, _, body = _request(
+            server,
+            "DELETE",
+            f"/v1/episodes/{guid}/speakers/SPEAKER_00",
+        )
+        assert status == 200 and body == {"deleted": "SPEAKER_00"}
+    finally:
+        server.shutdown()
+        thread.join()
+
+
 def test_feed_management_rejects_private_hosts(tmp_path):
     db = tmp_path / "ripperr.db"
     Store(db).close()

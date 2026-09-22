@@ -16,6 +16,7 @@ import {
   Textarea,
 } from "@heroui/react"
 import { useCallback, useEffect, useMemo, useState, type FormEvent } from "react"
+import { useRef } from "react"
 import {
   addFeed,
   deleteFeed,
@@ -63,19 +64,130 @@ function formatDuration(value: number | null | undefined) {
   return hours ? `${hours}h ${minutes}m` : `${minutes}m ${seconds}s`
 }
 
-function youtubeEmbedUrl(value: string) {
+function youtubeVideoId(value: string) {
   try {
     const url = new URL(value)
     const host = url.hostname.toLowerCase()
-    const videoId = host === "youtu.be"
+    return host === "youtu.be"
       ? url.pathname.slice(1)
       : ["youtube.com", "www.youtube.com", "m.youtube.com"].includes(host)
         ? url.searchParams.get("v")
         : null
-    return videoId ? `https://www.youtube-nocookie.com/embed/${encodeURIComponent(videoId)}` : null
   } catch {
     return null
   }
+}
+
+type YouTubePlayer = {
+  getCurrentTime: () => number
+  seekTo: (seconds: number, allowSeekAhead: boolean) => void
+  destroy: () => void
+}
+
+type YouTubeApi = {
+  Player: new (element: HTMLElement, options: {
+    videoId: string
+    playerVars?: Record<string, number>
+    events?: { onReady?: () => void }
+  }) => YouTubePlayer
+}
+
+declare global {
+  interface Window {
+    YT?: YouTubeApi
+    onYouTubeIframeAPIReady?: () => void
+  }
+}
+
+let youtubeApiPromise: Promise<YouTubeApi> | null = null
+
+function loadYouTubeApi() {
+  if (window.YT?.Player) return Promise.resolve(window.YT)
+  if (youtubeApiPromise) return youtubeApiPromise
+
+  youtubeApiPromise = new Promise<YouTubeApi>((resolve, reject) => {
+    const previousReady = window.onYouTubeIframeAPIReady
+    window.onYouTubeIframeAPIReady = () => {
+      previousReady?.()
+      if (window.YT?.Player) resolve(window.YT)
+      else reject(new Error("YouTube Player API did not initialize"))
+    }
+    const existing = document.querySelector<HTMLScriptElement>('script[src="https://www.youtube.com/iframe_api"]')
+    if (!existing) {
+      const script = document.createElement("script")
+      script.src = "https://www.youtube.com/iframe_api"
+      script.async = true
+      script.onerror = () => reject(new Error("Unable to load YouTube Player API"))
+      document.head.append(script)
+    }
+  })
+
+  return youtubeApiPromise
+}
+
+type MediaController = { seekTo: (seconds: number) => void }
+
+function SyncedMedia({
+  audioUrl,
+  title,
+  onControllerReady,
+  onTimeUpdate,
+}: {
+  audioUrl: string
+  title: string
+  onControllerReady: (controller: MediaController | null) => void
+  onTimeUpdate: (seconds: number) => void
+}) {
+  const videoId = youtubeVideoId(audioUrl)
+  const audioRef = useRef<HTMLAudioElement>(null)
+  const playerHostRef = useRef<HTMLDivElement>(null)
+  const playerRef = useRef<YouTubePlayer | null>(null)
+  const pollRef = useRef<number | null>(null)
+
+  useEffect(() => {
+    if (!videoId) {
+      onControllerReady({ seekTo: (seconds) => {
+        if (audioRef.current) audioRef.current.currentTime = seconds
+      } })
+      return () => onControllerReady(null)
+    }
+
+    let cancelled = false
+    onControllerReady({ seekTo: (seconds) => playerRef.current?.seekTo(seconds, true) })
+    loadYouTubeApi()
+      .then((api) => {
+        if (cancelled || !playerHostRef.current) return
+        playerRef.current = new api.Player(playerHostRef.current, {
+          videoId,
+          playerVars: { controls: 1, playsinline: 1, rel: 0 },
+          events: {
+            onReady: () => {
+              onTimeUpdate(playerRef.current?.getCurrentTime() ?? 0)
+              pollRef.current = window.setInterval(() => {
+                if (playerRef.current) onTimeUpdate(playerRef.current.getCurrentTime())
+              }, 250)
+            },
+          },
+        })
+      })
+      .catch(() => {
+        if (!cancelled) onControllerReady(null)
+      })
+
+    return () => {
+      cancelled = true
+      if (pollRef.current !== null) window.clearInterval(pollRef.current)
+      pollRef.current = null
+      playerRef.current?.destroy()
+      playerRef.current = null
+      onControllerReady(null)
+    }
+  }, [videoId, onControllerReady, onTimeUpdate])
+
+  if (!videoId) {
+    return <audio ref={audioRef} controls preload="metadata" src={audioUrl} onTimeUpdate={(event) => onTimeUpdate(event.currentTarget.currentTime)}>{"Your browser does not support audio playback."}</audio>
+  }
+  return <div ref={playerHostRef} className="youtube-player" title={`Play ${title}`} />
 }
 
 function titleFor(item: Episode) {
@@ -406,9 +518,7 @@ function EpisodesView({
   )
 }
 
-function Metadata({ episode }: { episode: EpisodeDetail }) {
-  const embedUrl = episode.audio_url ? youtubeEmbedUrl(episode.audio_url) : null
-
+function Metadata({ episode, onControllerReady, onTimeUpdate }: { episode: EpisodeDetail; onControllerReady: (controller: MediaController | null) => void; onTimeUpdate: (seconds: number) => void }) {
   return (
     <dl className="metadata">
       <div><dt>Feed</dt><dd>{episode.feed.title || episode.feed.url}</dd></div>
@@ -416,9 +526,8 @@ function Metadata({ episode }: { episode: EpisodeDetail }) {
       <div><dt>Duration</dt><dd>{formatDuration(episode.duration)}</dd></div>
       <div><dt>Updated</dt><dd>{formatDate(episode.updated_at)}</dd></div>
       <div><dt>Revision</dt><dd>{episode.revision}</dd></div>
-      <div><dt>Source GUID</dt><dd className="mono">{episode.source_guid}</dd></div>
-      {episode.audio_url && <div className="metadata-media"><dt>Listen</dt><dd>{embedUrl ? <iframe title={`Play ${titleFor(episode)}`} src={embedUrl} allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture" allowFullScreen /> : <audio controls preload="metadata" src={episode.audio_url}>Your browser does not support audio playback.</audio>}</dd></div>}
       {episode.source_url && <div><dt>Source</dt><dd><Link href={episode.source_url} isExternal showAnchorIcon>{episode.source_url}</Link></dd></div>}
+      {episode.audio_url && <div className="metadata-media"><dt>Listen</dt><dd><SyncedMedia audioUrl={episode.audio_url} title={titleFor(episode)} onControllerReady={onControllerReady} onTimeUpdate={onTimeUpdate} /></dd></div>}
     </dl>
   )
 }
@@ -485,8 +594,22 @@ function SpeakerEditor({ episode, onChange }: { episode: EpisodeDetail; onChange
 function EpisodeDetailView({ episode, error, onBack, onReload }: { episode: EpisodeDetail; error: string | null; onBack: () => void; onReload: () => Promise<void> }) {
   const [names, setNames] = useState(episode.speaker_names)
   const [showCorrections, setShowCorrections] = useState(false)
+  const [activeTurn, setActiveTurn] = useState<number | null>(null)
+  const mediaControllerRef = useRef<MediaController | null>(null)
   const speakerLabels = Object.fromEntries(names.map((item) => [item.speaker, item.name]))
   useEffect(() => setNames(episode.speaker_names), [episode.guid, episode.speaker_names])
+  useEffect(() => {
+    if (activeTurn === null) return
+    document.querySelector<HTMLElement>(`[data-turn-idx="${activeTurn}"]`)?.scrollIntoView({ behavior: "smooth", block: "nearest" })
+  }, [activeTurn])
+
+  const handleTimeUpdate = useCallback((seconds: number) => {
+    const turn = episode.turns.find((item) => seconds >= item.start && seconds < item.end)
+    setActiveTurn((current) => current === (turn?.idx ?? null) ? current : (turn?.idx ?? null))
+  }, [episode.turns])
+  const handleControllerReady = useCallback((controller: MediaController | null) => {
+    mediaControllerRef.current = controller
+  }, [])
 
   return (
     <div className="stack">
@@ -497,7 +620,15 @@ function EpisodeDetailView({ episode, error, onBack, onReload }: { episode: Epis
         <Chip color={statusColor(episode.status)} variant="flat">{episode.status}</Chip>
       </div>
 
-      <Card shadow="sm" className="panel"><CardBody><Metadata episode={episode} /></CardBody></Card>
+      <Card shadow="sm" className="panel"><CardBody><Metadata episode={episode} onControllerReady={handleControllerReady} onTimeUpdate={handleTimeUpdate} /></CardBody></Card>
+
+      <SpeakerEditor episode={{ ...episode, speaker_names: names }} onChange={setNames} />
+
+      <Card shadow="sm" className="panel transcript-panel">
+        <CardHeader className="panel-header"><div><h2>Transcript</h2><p className="muted">{episode.turns.length} turns · click a turn to jump</p></div><Button size="sm" variant="light" onPress={() => void onReload()}>Refresh</Button></CardHeader>
+        <Divider />
+        <CardBody className="flush-body">{episode.turns.length ? episode.turns.map((turn) => <div className={`turn-row${activeTurn === turn.idx ? " is-active" : ""}`} data-turn-idx={turn.idx} key={turn.idx} role="button" tabIndex={0} onClick={() => mediaControllerRef.current?.seekTo(turn.start)} onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); mediaControllerRef.current?.seekTo(turn.start) } }}><div className="turn-meta"><strong>{speakerLabels[turn.speaker] || turn.speaker}</strong>{speakerLabels[turn.speaker] && <span className="mono muted">{turn.speaker}</span>}<span className="muted">{formatDuration(turn.start)}–{formatDuration(turn.end)}</span></div><p>{turn.text}</p></div>) : <p className="empty">No transcript turns are available.</p>}</CardBody>
+      </Card>
 
       <Card shadow="sm" className="panel">
         <CardHeader className="panel-header">
@@ -513,14 +644,6 @@ function EpisodeDetailView({ episode, error, onBack, onReload }: { episode: Epis
           <Divider />
           <CardBody>{episode.corrections.length ? <div className="correction-list">{episode.corrections.map((item) => <div className="correction-row" key={`${item.heard}-${item.fixed}`}><span className="struck">{item.heard}</span><span>→</span><strong>{item.fixed}</strong><span className="muted">×{item.count}</span></div>)}</div> : <p className="empty">No corrections for this revision.</p>}</CardBody>
         </>}
-      </Card>
-
-      <SpeakerEditor episode={{ ...episode, speaker_names: names }} onChange={setNames} />
-
-      <Card shadow="sm" className="panel transcript-panel">
-        <CardHeader className="panel-header"><div><h2>Transcript</h2><p className="muted">{episode.turns.length} turns</p></div><Button size="sm" variant="light" onPress={() => void onReload()}>Refresh</Button></CardHeader>
-        <Divider />
-        <CardBody className="flush-body">{episode.turns.length ? episode.turns.map((turn) => <div className="turn-row" key={turn.idx}><div className="turn-meta"><strong>{speakerLabels[turn.speaker] || turn.speaker}</strong>{speakerLabels[turn.speaker] && <span className="mono muted">{turn.speaker}</span>}<span className="muted">{formatDuration(turn.start)}–{formatDuration(turn.end)}</span></div><p>{turn.text}</p></div>) : <p className="empty">No transcript turns are available.</p>}</CardBody>
       </Card>
     </div>
   )
