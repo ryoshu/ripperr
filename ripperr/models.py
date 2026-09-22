@@ -71,6 +71,15 @@ class SpeakerEmbedding:
 
 
 @dataclass(frozen=True)
+class SpeakerMatch:
+    episode_guid: str
+    speaker: str
+    name: str
+    score: float
+    sample_count: int
+
+
+@dataclass(frozen=True)
 class Hit:
     episode_id: int
     guid: str

@@ -57,6 +57,7 @@ were the feed's own ids.
 | `transcript(ref) -> Transcript \| None` | The episode, its turns in `idx` order, glossary corrections applied to this revision, and episode-scoped speaker names. `None` if unknown. An episode that is not done normally has no turns. |
 | `speaker_names(ref) -> list[SpeakerName]` | Episode-scoped display names for raw diarization labels. |
 | `speaker_embeddings(ref) -> list[SpeakerEmbedding]` | Locally stored per-episode Mac/Senko voice samples, when available. These are not exposed by the HTTP episode response. |
+| `speaker_matches(ref, min_score=0.70) -> list[SpeakerMatch]` | Conservative name suggestions from manually named samples in the same feed. Suggestions do not modify `speaker_names`. |
 | `set_speaker_name(ref, speaker, name) -> SpeakerName` | Stores a manual display name without changing the raw transcript turn labels. `speaker` must occur in the episode's current turns; otherwise it raises `ValueError`. |
 | `delete_speaker_name(ref, speaker) -> None` | Removes an episode-scoped display name. |
 | `search(query, limit=20) -> list[Hit]` | Full-text search over turns, best match first. The query may use FTS5 syntax; if it is not valid FTS5 (for example `don't`), it is retried as a literal phrase. `Hit.snippet` marks matches with `[` and `]`. |
@@ -197,6 +198,7 @@ the turns. Matching rules and limits are in the README.
   example `2026-09-18T21:17:16+00:00`.
 - `Episode.published`: ISO 8601 UTC, or `None` if the feed gave no date.
 - `Episode.summary`: the source-provided RSS description or YouTube description, or `None` when unavailable. Ripperr does not generate summaries.
+- `Episode.audio_url`: RSS enclosure URL or YouTube watch URL used for playback/downloads.
 - `Episode.source_url`: public RSS entry or YouTube watch URL for attribution; never a local path.
 - Speakers: labels like `SPEAKER_01` are per episode and mean nothing across
   episodes. `SpeakerName` mappings provide editable display names without
@@ -205,6 +207,9 @@ the turns. Matching rules and limits are in the README.
   does not join `SpeakerName` mappings. The `show` CLI command applies mappings.
 - `SpeakerName.method` is currently `manual` and `confidence` is currently
   `None`; other values are reserved for future attribution methods.
+- `speaker_matches()` treats manually named samples on the same feed as the
+  enrollment set. It returns cosine-similarity suggestions only; it never
+  auto-applies a name, and it does not match across feeds.
 - Models are frozen dataclasses (fields cannot be reassigned), and ripperr never
   modifies one after returning it.
 
@@ -260,10 +265,11 @@ episode metadata including the source `summary` when available, processing
 status, and revision information. It does not include transcript turns.
 
 `GET /v1/episodes/{guid}` returns feed metadata, public episode metadata,
-corrections, ordered turns, and `speaker_names` objects with `speaker`, `name`,
-`method`, `confidence`, and `updated_at`. It omits audio and host filesystem
-paths. The response has an ETag derived from the complete response body and
-returns `304 Not Modified` when `If-None-Match` matches.
+the stored `audio_url` for media playback, corrections, ordered turns, and
+`speaker_names` objects with `speaker`, `name`, `method`, `confidence`, and
+`updated_at`. It omits host filesystem paths. The response has an ETag derived
+from the complete response body and returns `304 Not Modified` when
+`If-None-Match` matches.
 
 `PUT /v1/episodes/{guid}/speakers/{speaker}` requires the bearer token and
 accepts `{"name": "Display Name"}`. It returns the stored `speaker_name`.

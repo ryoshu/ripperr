@@ -21,7 +21,16 @@ from pathlib import Path
 
 from .config import Config, default_config
 from .glossary import load as load_glossary
-from .models import Change, Episode, Feed, Hit, SpeakerEmbedding, SpeakerName, Transcript
+from .models import (
+    Change,
+    Episode,
+    Feed,
+    Hit,
+    SpeakerEmbedding,
+    SpeakerMatch,
+    SpeakerName,
+    Transcript,
+)
 from .pipeline import Log, Processor, remerge, sync_feeds
 from .store import Store
 
@@ -195,6 +204,12 @@ class Ripperr:
     def speaker_embeddings(self, ref: str | int) -> list[SpeakerEmbedding]:
         """Return locally stored per-episode voice samples, when available."""
         return self.store.speaker_embeddings(self._episode(ref).guid)
+
+    def speaker_matches(self, ref: str | int, min_score: float = 0.70) -> list[SpeakerMatch]:
+        """Suggest names from manually enrolled samples in the same feed."""
+        if not 0 <= min_score <= 1:
+            raise ValueError("min_score must be between 0 and 1")
+        return self.store.speaker_matches(self._episode(ref).guid, min_score)
 
     def set_speaker_name(self, ref: str | int, speaker: str, name: str) -> SpeakerName:
         ep = self._episode(ref)

@@ -6,6 +6,7 @@ to resolve YouTube stream URLs). Audio is transcribed like any other episode.
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -32,21 +33,62 @@ def _ydl(**opts):
                       "socket_timeout": 10, **opts})
 
 
-def parse_playlist(url: str) -> tuple[str | None, list[dict]]:
+def _published(entry) -> str | None:
+    for field in ("timestamp", "release_timestamp"):
+        value = entry.get(field)
+        if value is not None:
+            try:
+                return datetime.fromtimestamp(float(value), tz=timezone.utc).isoformat()
+            except (OSError, OverflowError, TypeError, ValueError):
+                pass
+    value = entry.get("upload_date")
+    if value:
+        try:
+            return datetime.strptime(str(value), "%Y%m%d").replace(tzinfo=timezone.utc).isoformat()
+        except ValueError:
+            pass
+    return None
+
+
+def parse_playlist(
+    url: str,
+    known_source_guids: set[str] | None = None,
+    refresh_source_guids: set[str] | None = None,
+) -> tuple[str | None, list[dict]]:
     """Same shape as feeds.parse_feed. Entries come back newest first."""
     with _ydl(extract_flat=True) as y:
         info = y.extract_info(url, download=False)
+    entries = [e for e in info.get("entries") or [] if e.get("title") not in _SKIP_TITLES]
+    if known_source_guids:
+        needed_ids = set()
+        for entry in entries:
+            needed_ids.add(entry["id"])
+            if f"yt:{entry['id']}" in known_source_guids:
+                break
+    else:
+        needed_ids = {entries[0]["id"]} if entries else set()
+    if refresh_source_guids:
+        needed_ids.update(
+            entry["id"] for entry in entries if f"yt:{entry['id']}" in refresh_source_guids
+        )
+    details = {}
+    if any(_published(e) is None and e["id"] in needed_ids for e in entries):
+        with _ydl() as y:
+            for e in entries:
+                if _published(e) is None and e["id"] in needed_ids:
+                    details[e["id"]] = y.extract_info(
+                        f"https://www.youtube.com/watch?v={e['id']}", download=False
+                    )
     episodes = []
-    for e in info.get("entries") or []:
-        if e.get("title") in _SKIP_TITLES:
-            continue
+    for e in entries:
+        metadata = details.get(e["id"], e)
         video_url = f"https://www.youtube.com/watch?v={e['id']}"
         episodes.append(
             {
                 "source_guid": f"yt:{e['id']}",
                 "title": e["title"],
-                "summary": e.get("description"),
-                "published": None,
+                "summary": e.get("description") or metadata.get("description"),
+                "published": _published(metadata),
                 "audio_url": e["url"],
                 "source_url": video_url,
             }

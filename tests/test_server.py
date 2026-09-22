@@ -112,7 +112,8 @@ def test_server_change_feed_and_revision_etag(tmp_path):
 
         status, headers, body = _get(server, f"/v1/episodes/{ep.guid}")
         assert status == 200 and body["source_url"] == "https://show/one"
-        assert "audio_path" not in body and "audio_url" not in body
+        assert body["audio_url"] == "https://audio"
+        assert "audio_path" not in body
         status, unchanged_headers, body = _get(
             server, f"/v1/episodes/{ep.guid}", {"If-None-Match": headers["ETag"]})
         assert status == 304 and body is None

@@ -147,6 +147,28 @@ CUDA; set `RIPPERR_DEVICE=cuda` when the CUDA runtime is installed.
 
 See the [editable architecture diagram](docs/architecture.drawio).
 
+## Dashboard
+
+The repo includes a small local React + HeroUI dashboard for feed administration,
+episode status, transcript review, and episode-scoped speaker names. It has no
+login screen; the optional API bearer token is supplied through the frontend
+environment when the server was started with `--token`.
+
+```bash
+# terminal 1
+ripperr serve --token "$RIPPERR_TOKEN"
+
+# terminal 2
+cd frontend
+cp .env.example .env.local  # set VITE_RIPPERR_TOKEN if the server uses --token
+npm install
+npm run dev
+```
+
+Open the Vite URL shown in the terminal (normally `http://localhost:5173`).
+The dev server proxies `/healthz` and `/v1` to the local Ripperr server. Set
+`RIPPERR_API_SERVER` when the API is on a non-default local port.
+
 ## The merge stage
 
 Each word is assigned to whichever speaker segment it overlaps most in time.
@@ -170,8 +192,9 @@ current one.
   print one raw segment and add the key you see.
 - **Speaker labels are per-episode.** `SPEAKER_00` in one episode has no relation
   to `SPEAKER_00` in the next. On Mac/Senko, the pipeline now stores one CAM++
-  centroid per episode speaker as a local `SpeakerEmbedding` sample. Matching
-  those samples to named profiles is not automatic yet.
+  centroid per episode speaker as a local `SpeakerEmbedding` sample.
+  `speaker_matches()` can suggest names from manually enrolled samples on the
+  same feed, but it never auto-applies a match.
 - **Overlapping speech** degrades attribution, as it does in every system.
 - **Hallucination on silence.** `condition_on_previous_text=False` limits runaway
   repetition loops but doesn't eliminate them on long musical interludes.

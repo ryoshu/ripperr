@@ -147,7 +147,9 @@ def make_handler(cfg: Config, token: str | None = None):
                     etag = None
                 else:
                     body = _episode_json(
-                        transcript.episode, rip.feed(transcript.episode.feed_id)
+                        transcript.episode,
+                        rip.feed(transcript.episode.feed_id),
+                        include_audio=True,
                     )
                     body["corrections"] = [c.__dict__ for c in transcript.corrections]
                     body["turns"] = [t.__dict__ for t in transcript.turns]
@@ -278,8 +280,8 @@ def _feed_json(feed) -> dict[str, object]:
     return {"id": feed.id, "url": feed.url, "title": feed.title}
 
 
-def _episode_json(episode, feed) -> dict[str, object]:
-    return {
+def _episode_json(episode, feed, *, include_audio: bool = False) -> dict[str, object]:
+    body = {
         "guid": episode.guid,
         "source_guid": episode.source_guid,
         "feed": _feed_json(feed),
@@ -293,6 +295,9 @@ def _episode_json(episode, feed) -> dict[str, object]:
         "revision": episode.revision,
         "merged_at": episode.merged_at,
     }
+    if include_audio:
+        body["audio_url"] = episode.audio_url
+    return body
 
 
 def _speaker_json(mapping) -> dict[str, object]:

@@ -64,11 +64,15 @@ def _summary(entry) -> str | None:
     return getattr(entry, "summary", None) or getattr(entry, "description", None)
 
 
-def parse_feed(url: str) -> tuple[str | None, list[dict]]:
+def parse_feed(
+    url: str,
+    known_source_guids: set[str] | None = None,
+    refresh_source_guids: set[str] | None = None,
+) -> tuple[str | None, list[dict]]:
     """Return (feed_title, episodes). Episodes are dicts, newest first as the
     feed presents them."""
     if youtube.is_youtube(url):
-        return youtube.parse_playlist(url)
+        return youtube.parse_playlist(url, known_source_guids, refresh_source_guids)
     parsed = feedparser.parse(url, agent=UA)
     if parsed.bozo and not parsed.entries:
         raise RuntimeError(f"could not parse feed {url}: {parsed.bozo_exception}")

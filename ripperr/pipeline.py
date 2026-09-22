@@ -36,14 +36,15 @@ def sync_feeds(store: Store, log: Log = print) -> int:
     """
     total = 0
     for feed in store.feeds():
+        known = store.source_guids(feed.id)
+        refresh = store.source_guids_without_published(feed.id)
         try:
-            title, episodes = feeds.parse_feed(feed.url)
+            title, episodes = feeds.parse_feed(feed.url, known, refresh)
         except Exception as exc:  # noqa: BLE001 - one bad feed shouldn't stop the rest
             log(f"  ! {feed.url}: {exc}")
             continue
         if title and title != feed.title:
             store.add_feed(feed.url, title)
-        known = store.source_guids(feed.id)
         if known:
             fresh = []
             for episode in episodes:

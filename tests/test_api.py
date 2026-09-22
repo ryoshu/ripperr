@@ -112,6 +112,37 @@ def test_speaker_embeddings_round_trip(tmp_path):
     rip.close()
 
 
+def test_speaker_matches_use_named_samples_from_the_same_feed(tmp_path):
+    rip, guid = make(tmp_path)
+    feed = rip.feeds()[0]
+    rip.store.add_episode(feed.id, "ep-2", "Ep 2", None, "http://a-2")
+    other_guid = rip.episodes()[-1].guid
+    rip.store.replace_turns(
+        1,
+        [Turn(0, "SPEAKER_01", 0, 1, "hello")],
+        speaker_embeddings={"SPEAKER_01": [1.0, 0.0]},
+    )
+    rip.set_speaker_name(guid, "SPEAKER_01", "Host")
+    rip.store.replace_turns(
+        2,
+        [Turn(0, "SPEAKER_00", 0, 1, "hello")],
+        speaker_embeddings={"SPEAKER_00": [0.99, 0.01]},
+    )
+    other_feed = rip.add_feed("http://other-feed")
+    rip.store.add_episode(other_feed.id, "other-1", "Other", None, "http://other-audio")
+    rip.store.replace_turns(
+        3,
+        [Turn(0, "SPEAKER_00", 0, 1, "hello")],
+        speaker_embeddings={"SPEAKER_00": [0.99, 0.01]},
+    )
+    rip.set_speaker_name(3, "SPEAKER_00", "Other Host")
+
+    [match] = rip.speaker_matches(other_guid, min_score=0.9)
+    assert (match.speaker, match.name, match.sample_count) == ("SPEAKER_00", "Host", 1)
+    assert rip.speaker_names(other_guid) == []
+    rip.close()
+
+
 def test_diarization_recompute_clears_speaker_names(tmp_path, monkeypatch):
     rip, guid = make(tmp_path)
     rip.remerge(guid, glossary=[])
@@ -497,7 +528,7 @@ def test_new_feed_starts_at_latest_and_follows_new_entries(tmp_path, monkeypatch
         {"source_guid": "newest", "title": "Newest", "published": None, "audio_url": "a"},
         {"source_guid": "older", "title": "Older", "published": None, "audio_url": "b"},
     ]
-    monkeypatch.setattr("ripperr.feeds.parse_feed", lambda _: ("Show", episodes))
+    monkeypatch.setattr("ripperr.feeds.parse_feed", lambda _, _known=None, _refresh=None: ("Show", episodes))
 
     rip = Ripperr(Config(root=tmp_path), log=lambda _: None)
     rip.add_feed("http://feed")
@@ -518,7 +549,7 @@ def test_sync_does_not_backfill_entries_after_first_known_guid(tmp_path, monkeyp
         {"source_guid": "newest", "title": "Newest", "published": None, "audio_url": "a"},
         {"source_guid": "historical", "title": "Historical", "published": None, "audio_url": "c"},
     ]]
-    monkeypatch.setattr("ripperr.feeds.parse_feed", lambda _: ("Show", feeds.pop(0)))
+    monkeypatch.setattr("ripperr.feeds.parse_feed", lambda _, _known=None, _refresh=None: ("Show", feeds.pop(0)))
 
     rip = Ripperr(Config(root=tmp_path), log=lambda _: None)
     rip.add_feed("http://feed")

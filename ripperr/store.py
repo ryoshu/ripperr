@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import sqlite3
 from contextlib import contextmanager
 from datetime import datetime, timezone
@@ -18,7 +19,17 @@ from email.utils import parsedate_to_datetime
 from pathlib import Path
 from typing import Iterator, Mapping, Sequence
 
-from .models import Change, Correction, Episode, Feed, Hit, SpeakerEmbedding, SpeakerName, Turn
+from .models import (
+    Change,
+    Correction,
+    Episode,
+    Feed,
+    Hit,
+    SpeakerEmbedding,
+    SpeakerMatch,
+    SpeakerName,
+    Turn,
+)
 
 SCHEMA_VERSION = 7
 
@@ -480,6 +491,14 @@ class Store:
             )
         }
 
+    def source_guids_without_published(self, feed_id: int) -> set[str]:
+        return {
+            row["source_guid"]
+            for row in self.conn.execute(
+                "SELECT source_guid FROM episodes WHERE feed_id = ? AND published IS NULL", (feed_id,)
+            )
+        }
+
     def set_status(
         self,
         episode_id: int,
@@ -537,6 +556,42 @@ class Store:
             )
             for row in rows
         ]
+
+    def speaker_matches(self, episode_guid: str, min_score: float = 0.70) -> list[SpeakerMatch]:
+        episode = self.conn.execute(
+            "SELECT feed_id FROM episodes WHERE guid = ?", (episode_guid,)
+        ).fetchone()
+        if episode is None:
+            raise LookupError(f"no episode {episode_guid}")
+
+        targets = self.speaker_embeddings(episode_guid)
+        rows = self.conn.execute(
+            """SELECT sn.name, se.embedding
+               FROM speaker_names sn
+               JOIN episodes e ON e.guid = sn.episode_guid
+               JOIN speaker_embeddings se
+                 ON se.episode_guid = sn.episode_guid AND se.speaker = sn.speaker
+               WHERE e.feed_id = ? AND e.guid != ?""",
+            (episode["feed_id"], episode_guid),
+        )
+        profiles: dict[str, list[tuple[float, ...]]] = {}
+        for row in rows:
+            profiles.setdefault(row["name"], []).append(tuple(json.loads(row["embedding"])))
+
+        matches = []
+        for target in targets:
+            candidates = [
+                (name, max(_cosine(target.embedding, sample) for sample in samples), len(samples))
+                for name, samples in profiles.items()
+            ]
+            if not candidates:
+                continue
+            name, score, sample_count = max(candidates, key=lambda item: item[1])
+            if score >= min_score:
+                matches.append(
+                    SpeakerMatch(episode_guid, target.speaker, name, score, sample_count)
+                )
+        return matches
 
     def set_speaker_name(
         self,
@@ -804,3 +859,13 @@ def _feed(row: sqlite3.Row) -> Feed:
 
 def _episode(row: sqlite3.Row) -> Episode:
     return Episode(**{k: row[k] for k in Episode.__dataclass_fields__})
+
+
+def _cosine(left: Sequence[float], right: Sequence[float]) -> float:
+    if len(left) != len(right):
+        return -1.0
+    left_norm = math.sqrt(sum(value * value for value in left))
+    right_norm = math.sqrt(sum(value * value for value in right))
+    if not left_norm or not right_norm:
+        return -1.0
+    return sum(a * b for a, b in zip(left, right)) / (left_norm * right_norm)
