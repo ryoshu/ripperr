@@ -226,7 +226,7 @@ function StatCard({ label, value, tone = "" }: { label: string; value: number | 
   )
 }
 
-function EpisodeRow({ episode, onOpen }: { episode: Episode; onOpen: () => void }) {
+function EpisodeRow({ episode, onOpen, showFeed = true }: { episode: Episode; onOpen: () => void; showFeed?: boolean }) {
   return (
     <button className="episode-row" type="button" onClick={onOpen}>
       <div className="episode-row-main">
@@ -234,7 +234,7 @@ function EpisodeRow({ episode, onOpen }: { episode: Episode; onOpen: () => void 
           <span className="episode-title">{titleFor(episode)}</span>
           <Chip size="sm" variant="flat" color={statusColor(episode.status)}>{episode.status}</Chip>
         </div>
-        <span className="episode-feed">{episode.feed.title || episode.feed.url}</span>
+        {showFeed && <span className="episode-feed">{episode.feed.title || episode.feed.url}</span>}
       </div>
       <div className="episode-row-meta">
         <span>{formatDate(episode.published)}</span>
@@ -496,6 +496,12 @@ function EpisodesView({
       return haystack.includes(query.toLowerCase())
     })
     .sort((a, b) => b.updated_at.localeCompare(a.updated_at))
+  const grouped = Array.from(filtered.reduce((groups, episode) => {
+    const existing = groups.get(episode.feed.id)
+    if (existing) existing.episodes.push(episode)
+    else groups.set(episode.feed.id, { feed: episode.feed, episodes: [episode] })
+    return groups
+  }, new Map<number, { feed: Feed; episodes: Episode[] }>()).values())
 
   return (
     <div className="stack">
@@ -516,7 +522,12 @@ function EpisodesView({
         </CardBody>
         <Divider />
         <CardBody className="flush-body">
-          {filtered.length ? filtered.map((episode) => <EpisodeRow key={episode.guid} episode={episode} onOpen={() => onOpen(episode.guid)} />) : <p className="empty">No matching episodes.</p>}
+          {grouped.length ? <div className="episode-groups">{grouped.map((group) => (
+            <section className="episode-group" key={group.feed.id}>
+              <div className="episode-group-header"><div><p className="eyebrow">Show</p><h3>{group.feed.title || group.feed.url}</h3></div><Chip size="sm" variant="flat">{group.episodes.length} {group.episodes.length === 1 ? "episode" : "episodes"}</Chip></div>
+              {group.episodes.map((episode) => <EpisodeRow key={episode.guid} episode={episode} showFeed={false} onOpen={() => onOpen(episode.guid)} />)}
+            </section>
+          ))}</div> : <p className="empty">No matching episodes.</p>}
         </CardBody>
       </Card>
     </div>
