@@ -24,8 +24,6 @@ button, input, textarea { font: inherit; }
 .topnav-button { min-width: auto !important; border-radius: 9px !important; color: #9ea5b1 !important; font-weight: 600 !important; }
 .topnav-button:hover, .topnav-button[data-hover="true"] { color: #f8fafc !important; background: rgba(255,255,255,.08) !important; }
 .topnav-button.is-active { color: #171411 !important; background: #f2bb64 !important; box-shadow: 0 2px 10px rgba(242,187,100,.18); }
-.topbar-refresh { border: 1px solid rgba(255,255,255,.15) !important; border-radius: 9px !important; color: #e8ebef !important; background: rgba(255,255,255,.06) !important; }
-.topbar-refresh:hover, .topbar-refresh[data-hover="true"] { border-color: rgba(255,255,255,.28) !important; background: rgba(255,255,255,.1) !important; }
 .main-content { width: min(1180px, calc(100% - 48px)); margin: 0 auto; padding: 48px 0 64px; }
 .footer { display: flex; justify-content: center; gap: 9px; padding: 0 24px 28px; color: #8c919b; font-size: 12px; }
 .stack { display: grid; gap: 22px; }
@@ -64,9 +62,12 @@ button, input, textarea { font: inherit; }
 .episode-feed, .feed-url { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: #848a95; font-size: 12px; }
 .episode-row-meta { display: flex; flex: 0 0 auto; gap: 12px; color: #858b96; font-size: 12px; }
 .change-seq { color: #989da5; font-family: "DM Mono", ui-monospace, monospace; font-size: 11px; }
-.episode-group + .episode-group { border-top: 1px solid #e5e8ec; }
-.episode-group-header { display: flex; align-items: end; justify-content: space-between; gap: 14px; padding: 18px 20px 11px; background: #fbfcfd; }
-.episode-group-header h3 { max-width: 75%; margin: 4px 0 0; overflow: hidden; color: #282d35; text-overflow: ellipsis; white-space: nowrap; font-size: 14px; letter-spacing: -.02em; }
+.podcast-row { display: flex; align-items: center; justify-content: space-between; gap: 18px; width: 100%; padding: 20px; border: 0; border-bottom: 1px solid #edf0f2; background: transparent; color: inherit; text-align: left; cursor: pointer; }
+.podcast-row:last-child { border-bottom: 0; }
+.podcast-row:hover { background: #f8fafc; }
+.podcast-row-main { min-width: 0; display: grid; gap: 7px; }
+.podcast-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: #282d35; font-size: 15px; font-weight: 650; }
+.podcast-row-meta { display: flex; flex: 0 0 auto; gap: 16px; color: #858b96; font-size: 12px; }
 .pipeline-body { display: grid; gap: 16px; }
 .pipeline-stat { display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid #edf0f2; padding-bottom: 13px; color: #666d78; font-size: 13px; }
 .pipeline-stat strong { color: #1c2026; font-size: 19px; }
@@ -134,8 +135,9 @@ button, input, textarea { font: inherit; }
 @media (max-width: 520px) {
   .stats-grid { grid-template-columns: 1fr 1fr; }
   .stat-card .heroui-card-body { padding: 15px; }
-  .episode-row, .feed-row { align-items: start; flex-direction: column; gap: 10px; padding: 14px 16px; }
+  .episode-row, .feed-row, .podcast-row { align-items: start; flex-direction: column; gap: 10px; padding: 14px 16px; }
   .episode-row-meta { width: 100%; justify-content: space-between; }
+  .podcast-row-meta { width: 100%; justify-content: space-between; }
   .row-actions { width: 100%; justify-content: flex-end; }
   .metadata { grid-template-columns: 1fr; }
   .speaker-row { grid-template-columns: 1fr auto auto; }

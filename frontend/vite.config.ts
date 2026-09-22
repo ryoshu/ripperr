@@ -9,6 +9,7 @@ const apiServer = (
 export default defineConfig({
   plugins: [react(), tailwindcss()],
   server: {
+    allowedHosts: ["nyarlathotep.taile4827e.ts.net"],
     proxy: {
       "/healthz": apiServer,
       "/v1": apiServer,

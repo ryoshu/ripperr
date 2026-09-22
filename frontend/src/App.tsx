@@ -34,15 +34,17 @@ import {
   type SpeakerName,
 } from "./api"
 
-type Section = "overview" | "feeds" | "episodes"
+type Section = "overview" | "feeds" | "podcasts"
 
-function readLocation(): { section: Section; guid: string | null } {
+function readLocation(): { section: Section; guid: string | null; feedId: number | null } {
   const path = window.location.pathname.replace(/\/+$/, "") || "/"
   const match = path.match(/^\/episodes\/(.+)$/)
-  if (match) return { section: "episodes", guid: decodeURIComponent(match[1]) }
-  if (path === "/feeds") return { section: "feeds", guid: null }
-  if (path === "/episodes") return { section: "episodes", guid: null }
-  return { section: "overview", guid: null }
+  if (match) return { section: "podcasts", guid: decodeURIComponent(match[1]), feedId: null }
+  const showMatch = path.match(/^\/podcasts\/(\d+)$/)
+  if (showMatch) return { section: "podcasts", guid: null, feedId: Number(showMatch[1]) }
+  if (path === "/feeds") return { section: "feeds", guid: null, feedId: null }
+  if (path === "/podcasts" || path === "/episodes") return { section: "podcasts", guid: null, feedId: null }
+  return { section: "overview", guid: null, feedId: null }
 }
 
 function navigate(path: string) {
@@ -291,7 +293,7 @@ function Overview({
               <h2>Recent episodes</h2>
               <p className="muted">Latest database updates</p>
             </div>
-            <Button size="sm" variant="flat" onPress={() => onNavigate("/episodes")}>View all</Button>
+            <Button size="sm" variant="flat" onPress={() => onNavigate("/podcasts")}>View all</Button>
           </CardHeader>
           <Divider />
           <CardBody className="flush-body">
@@ -450,17 +452,55 @@ function FeedsView({ feeds, episodes, onReload }: { feeds: Feed[]; episodes: Epi
   )
 }
 
-function EpisodesView({
+function PodcastsView({ feeds, episodes, onOpen }: { feeds: Feed[]; episodes: Episode[]; onOpen: (feedId: number) => void }) {
+  const shows = feeds.map((feed) => {
+    const showEpisodes = episodes
+      .filter((episode) => episode.feed.id === feed.id)
+      .sort((a, b) => (b.published || b.updated_at).localeCompare(a.published || a.updated_at))
+    return { feed, count: showEpisodes.length, latest: showEpisodes[0] }
+  })
+
+  return (
+    <div className="stack">
+      <div className="page-heading">
+        <div><p className="eyebrow">Library</p><h1>Podcasts</h1><p className="muted">Shows in your Ripperr workspace.</p></div>
+        <Chip variant="flat">{shows.length} {shows.length === 1 ? "show" : "shows"}</Chip>
+      </div>
+      <Card shadow="sm" className="panel">
+        <CardBody className="flush-body">
+          {shows.length ? shows.map(({ feed, count, latest }) => (
+            <button className="podcast-row" key={feed.id} type="button" onClick={() => onOpen(feed.id)}>
+              <div className="podcast-row-main">
+                <span className="podcast-name">{feed.title || "Untitled show"}</span>
+                <span className="feed-url">{feed.url}</span>
+              </div>
+              <div className="podcast-row-meta">
+                <span>{count} {count === 1 ? "episode" : "episodes"}</span>
+                <span>Latest {formatDate(latest?.published)}</span>
+              </div>
+            </button>
+          )) : <p className="empty">No podcasts yet. Add a feed to get started.</p>}
+        </CardBody>
+      </Card>
+    </div>
+  )
+}
+
+function PodcastView({
+  feed,
   episodes,
   selectedGuid,
   onOpen,
   onBack,
+  onBackToIndex,
   onReload,
 }: {
+  feed: Feed | null
   episodes: Episode[]
   selectedGuid: string | null
   onOpen: (guid: string) => void
   onBack: () => void
+  onBackToIndex: () => void
   onReload: () => Promise<void>
 }) {
   const [query, setQuery] = useState("")
@@ -483,36 +523,34 @@ function EpisodesView({
       .finally(() => setLoading(false))
   }, [selectedGuid])
 
+  if (!feed) return <><ErrorNotice message="Podcast not found" /><Button variant="light" onPress={onBackToIndex}>Back to podcasts</Button></>
+
   if (selectedGuid) {
     if (loading && !detail) return <Loading />
-    if (!detail) return <><ErrorNotice message={error} /><Button variant="light" onPress={onBack}>Back to episodes</Button></>
+    if (!detail) return <><ErrorNotice message={error} /><Button variant="light" onPress={onBack}>Back to {feed.title || "podcast"}</Button></>
     return <EpisodeDetailView episode={detail} error={error} onBack={onBack} onReload={async () => { await onReload(); const fresh = await getEpisode(detail.guid); setDetail(fresh) }} />
   }
 
-  const filtered = episodes
+  const showEpisodes = episodes.filter((episode) => episode.feed.id === feed.id)
+  const filtered = showEpisodes
     .filter((episode) => status === "all" || episode.status === status)
     .filter((episode) => {
-      const haystack = `${episode.title ?? ""} ${episode.feed.title ?? ""} ${episode.feed.url}`.toLowerCase()
+      const haystack = `${episode.title ?? ""} ${feed.title ?? ""} ${feed.url}`.toLowerCase()
       return haystack.includes(query.toLowerCase())
     })
-    .sort((a, b) => b.updated_at.localeCompare(a.updated_at))
-  const grouped = Array.from(filtered.reduce((groups, episode) => {
-    const existing = groups.get(episode.feed.id)
-    if (existing) existing.episodes.push(episode)
-    else groups.set(episode.feed.id, { feed: episode.feed, episodes: [episode] })
-    return groups
-  }, new Map<number, { feed: Feed; episodes: Episode[] }>()).values())
+    .sort((a, b) => (b.published || b.updated_at).localeCompare(a.published || a.updated_at))
 
   return (
     <div className="stack">
+      <Button variant="light" className="back-button" onPress={onBackToIndex}>← Back to podcasts</Button>
       <div className="page-heading">
-        <div><p className="eyebrow">Administration</p><h1>Episodes</h1><p className="muted">Review processing state and open transcript detail.</p></div>
-        <Chip variant="flat">{episodes.length} total</Chip>
+        <div><p className="eyebrow">Podcast</p><h1>{feed.title || "Untitled show"}</h1><p className="muted"><Link href={feed.url} isExternal showAnchorIcon>{feed.url}</Link></p></div>
+        <Chip variant="flat">{showEpisodes.length} {showEpisodes.length === 1 ? "episode" : "episodes"}</Chip>
       </div>
       <Card shadow="sm" className="panel">
         <CardBody>
           <div className="filter-row">
-            <Input aria-label="Search episodes" placeholder="Search title or feed…" value={query} onValueChange={setQuery} className="search-input" />
+            <Input aria-label="Search episodes" placeholder="Search episodes…" value={query} onValueChange={setQuery} className="search-input" />
             <div className="status-filters">
               {(["all", "new", "downloaded", "done", "error"] as const).map((value) => (
                 <Button key={value} size="sm" variant={status === value ? "solid" : "light"} color={value === "error" ? "danger" : "default"} onPress={() => setStatus(value)}>{value === "all" ? "All" : value}</Button>
@@ -522,12 +560,7 @@ function EpisodesView({
         </CardBody>
         <Divider />
         <CardBody className="flush-body">
-          {grouped.length ? <div className="episode-groups">{grouped.map((group) => (
-            <section className="episode-group" key={group.feed.id}>
-              <div className="episode-group-header"><div><p className="eyebrow">Show</p><h3>{group.feed.title || group.feed.url}</h3></div><Chip size="sm" variant="flat">{group.episodes.length} {group.episodes.length === 1 ? "episode" : "episodes"}</Chip></div>
-              {group.episodes.map((episode) => <EpisodeRow key={episode.guid} episode={episode} showFeed={false} onOpen={() => onOpen(episode.guid)} />)}
-            </section>
-          ))}</div> : <p className="empty">No matching episodes.</p>}
+          {filtered.length ? filtered.map((episode) => <EpisodeRow key={episode.guid} episode={episode} showFeed={false} onOpen={() => onOpen(episode.guid)} />) : <p className="empty">No matching episodes.</p>}
         </CardBody>
       </Card>
     </div>
@@ -634,7 +667,7 @@ function EpisodeDetailView({ episode, error, onBack, onReload }: { episode: Epis
 
   return (
     <div className="stack">
-      <Button variant="light" className="back-button" onPress={onBack}>← Back to episodes</Button>
+      <Button variant="light" className="back-button" onPress={onBack}>← Back to podcast</Button>
       <ErrorNotice message={error} />
       <div className="page-heading detail-heading">
         <div><p className="eyebrow">{episode.feed.title || episode.feed.url}</p><h1>{titleFor(episode)}</h1></div>
@@ -700,22 +733,26 @@ function App() {
   useEffect(() => { void reload() }, [reload])
 
   function go(path: string) { navigate(path) }
+  const currentFeed = location.feedId !== null
+    ? feeds.find((feed) => feed.id === location.feedId) ?? null
+    : location.guid
+      ? episodes.find((episode) => episode.guid === location.guid)?.feed ?? null
+      : null
 
   return (
     <div className="app-shell">
       <header className="topbar">
         <button className="brand" type="button" onClick={() => go("/")}><span className="brand-mark">r</span><span>ripperr</span></button>
         <nav className="topnav" aria-label="Primary navigation">
-          {([ ["/", "Overview"], ["/feeds", "Feeds"], ["/episodes", "Episodes"] ] as const).map(([path, label]) => {
+          {([ ["/", "Overview"], ["/podcasts", "Podcasts"], ["/feeds", "Feeds"] ] as const).map(([path, label]) => {
             const active = location.section === (path === "/" ? "overview" : path.slice(1) as Section)
             return <Button key={path} size="sm" className={`topnav-button${active ? " is-active" : ""}`} variant={active ? "solid" : "light"} onPress={() => go(path)}>{label}</Button>
           })}
         </nav>
-        <Button size="sm" className="topbar-refresh" variant="flat" onPress={() => void reload()} isLoading={loading}>Refresh</Button>
       </header>
       <main className="main-content">
         <ErrorNotice message={error} />
-        {loading && !feeds.length && !episodes.length ? <Loading /> : location.section === "overview" ? <Overview feeds={feeds} episodes={episodes} health={health} onOpenEpisode={(guid) => go(`/episodes/${encodeURIComponent(guid)}`)} onNavigate={go} /> : location.section === "feeds" ? <FeedsView feeds={feeds} episodes={episodes} onReload={reload} /> : <EpisodesView episodes={episodes} selectedGuid={location.guid} onOpen={(guid) => go(`/episodes/${encodeURIComponent(guid)}`)} onBack={() => go("/episodes")} onReload={reload} />}
+        {loading && !feeds.length && !episodes.length ? <Loading /> : location.section === "overview" ? <Overview feeds={feeds} episodes={episodes} health={health} onOpenEpisode={(guid) => go(`/episodes/${encodeURIComponent(guid)}`)} onNavigate={go} /> : location.section === "feeds" ? <FeedsView feeds={feeds} episodes={episodes} onReload={reload} /> : location.feedId === null && location.guid === null ? <PodcastsView feeds={feeds} episodes={episodes} onOpen={(feedId) => go(`/podcasts/${feedId}`)} /> : <PodcastView feed={currentFeed} episodes={episodes} selectedGuid={location.guid} onOpen={(guid) => go(`/episodes/${encodeURIComponent(guid)}`)} onBack={() => go(currentFeed ? `/podcasts/${currentFeed.id}` : "/podcasts")} onBackToIndex={() => go("/podcasts")} onReload={reload} />}
       </main>
       <footer className="footer"><span>Local dashboard</span><span>•</span><span>change sequence {health?.change_seq ?? "—"}</span></footer>
     </div>
