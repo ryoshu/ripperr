@@ -39,5 +39,13 @@ stop_pid_file() {
   return 1
 }
 
+for label in com.ryoshu.ripperr.api com.ryoshu.ripperr.web; do
+  target="gui/$(id -u)/$label"
+  if launchctl print "$target" >/dev/null 2>&1; then
+    launchctl bootout "$target"
+    echo "stopped $label"
+  fi
+done
+
 stop_pid_file "dashboard" "$RUN_DIR/web.pid" "npm run dev"
 stop_pid_file "API" "$RUN_DIR/api.pid" "ripperr.cli serve"

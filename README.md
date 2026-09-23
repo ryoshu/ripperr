@@ -102,8 +102,8 @@ never modified, so `ripperr remerge <id>` re-applies a changed glossary in secon
 What goes in the glossary is up to the caller. ripperr has no idea what a player
 or a company is.
 
-For unattended operation, a launchd agent or cron job running
-`ripperr sync && ripperr run` is all you need.
+For unattended operation, run `scripts/cron.sh` from a launchd agent or cron
+job at the cadence you want. It syncs feeds, then processes pending episodes.
 
 ## Python API
 
