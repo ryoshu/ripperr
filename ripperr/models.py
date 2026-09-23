@@ -71,12 +71,30 @@ class SpeakerEmbedding:
 
 
 @dataclass(frozen=True)
+class SpeakerProfile:
+    feed_id: int
+    name: str
+    embedding: tuple[float, ...]
+    sample_count: int
+    updated_at: str  # ISO 8601 UTC
+
+
+@dataclass(frozen=True)
 class SpeakerMatch:
     episode_guid: str
     speaker: str
     name: str
     score: float
     sample_count: int
+
+
+@dataclass(frozen=True)
+class GuestHint:
+    episode_guid: str
+    name: str
+    source: str  # title | summary | transcript | llm
+    evidence: str
+    confidence: float
 
 
 @dataclass(frozen=True)

@@ -57,7 +57,10 @@ were the feed's own ids.
 | `transcript(ref) -> Transcript \| None` | The episode, its turns in `idx` order, glossary corrections applied to this revision, and episode-scoped speaker names. `None` if unknown. An episode that is not done normally has no turns. |
 | `speaker_names(ref) -> list[SpeakerName]` | Episode-scoped display names for raw diarization labels. |
 | `speaker_embeddings(ref) -> list[SpeakerEmbedding]` | Locally stored per-episode Mac/Senko voice samples, when available. These are not exposed by the HTTP episode response. |
-| `speaker_matches(ref, min_score=0.70) -> list[SpeakerMatch]` | Conservative name suggestions from manually named samples in the same feed. Suggestions do not modify `speaker_names`. |
+| `speaker_profiles(feed_id) -> list[SpeakerProfile]` | Show-level normalized voice centroids built from manually named identities. Only names with at least two labeled episode samples are enrolled, which keeps one-off guests out of the recurring profile set. |
+| `rebuild_speaker_profiles(feed_id) -> list[SpeakerProfile]` | Rebuilds the show's profiles from current manual labels and returns them. |
+| `speaker_matches(ref, min_score=0.70) -> list[SpeakerMatch]` | Conservative name suggestions from the show's recurring voice profiles. Older databases without rebuilt profiles fall back to manually named samples. Suggestions do not modify `speaker_names`. |
+| `guest_hints(ref, use_llm=None) -> list[GuestHint]` | Advisory guest-name evidence from explicit phrases in the title, source summary, or opening transcript turns. With `RIPPERR_DEEPINFRA_TOKEN` configured, `use_llm=None` also asks DeepInfra for structured candidates; `use_llm=False` keeps the call local. It returns evidence, not a voice-identification probability. |
 | `set_speaker_name(ref, speaker, name) -> SpeakerName` | Stores a manual display name without changing the raw transcript turn labels. `speaker` must occur in the episode's current turns; otherwise it raises `ValueError`. |
 | `delete_speaker_name(ref, speaker) -> None` | Removes an episode-scoped display name. |
 | `search(query, limit=20) -> list[Hit]` | Full-text search over turns, best match first. The query may use FTS5 syntax; if it is not valid FTS5 (for example `don't`), it is retried as a literal phrase. `Hit.snippet` marks matches with `[` and `]`. |
@@ -207,9 +210,12 @@ the turns. Matching rules and limits are in the README.
   does not join `SpeakerName` mappings. The `show` CLI command applies mappings.
 - `SpeakerName.method` is currently `manual` and `confidence` is currently
   `None`; other values are reserved for future attribution methods.
-- `speaker_matches()` treats manually named samples on the same feed as the
-  enrollment set. It returns cosine-similarity suggestions only; it never
-  auto-applies a name, and it does not match across feeds.
+- `rebuild_speaker_profiles()` averages and L2-normalizes at least two manually
+  labeled samples for each recurring identity on a feed. `speaker_matches()`
+  compares each episode embedding to those centroids and returns cosine-similarity
+  suggestions only; it never auto-applies a name, and it does not match across
+  feeds. This is the voice side of the hybrid identity flow; guest hints are
+  separate text evidence.
 - Models are frozen dataclasses (fields cannot be reassigned), and ripperr never
   modifies one after returning it.
 
@@ -267,9 +273,10 @@ status, and revision information. It does not include transcript turns.
 `GET /v1/episodes/{guid}` returns feed metadata, public episode metadata,
 the stored `audio_url` for media playback, corrections, ordered turns, and
 `speaker_names` objects with `speaker`, `name`, `method`, `confidence`, and
-`updated_at`. It omits host filesystem paths. The response has an ETag derived
-from the complete response body and returns `304 Not Modified` when
-`If-None-Match` matches.
+`updated_at`. It also includes conservative `speaker_matches` and text-only
+`guest_hints` when available. It omits host filesystem paths. The response has
+an ETag derived from the complete response body and returns `304 Not Modified`
+when `If-None-Match` matches.
 
 `PUT /v1/episodes/{guid}/speakers/{speaker}` requires the bearer token and
 accepts `{"name": "Display Name"}`. It returns the stored `speaker_name`.

@@ -136,6 +136,49 @@ def cmd_calibrate(args, rip: Ripperr) -> int:
     return 0
 
 
+def _feed_for_identity(args, rip: Ripperr):
+    feed = rip.feed(args.feed) if args.feed is not None else next(
+        (feed for feed in rip.feeds() if "on the couch" in (feed.title or "").casefold()),
+        None,
+    )
+    if feed is None:
+        print("no matching feed; pass --feed <id>", file=sys.stderr)
+    return feed
+
+
+def cmd_profiles(args, rip: Ripperr) -> int:
+    feed = _feed_for_identity(args, rip)
+    if feed is None:
+        return 1
+    profiles = rip.rebuild_speaker_profiles(feed.id)
+    print(f"feed {feed.id}: {feed.title or feed.url}")
+    if not profiles:
+        print("no manually labeled voice samples")
+        return 0
+    for profile in profiles:
+        print(f"{profile.name}: {profile.sample_count} sample(s), {len(profile.embedding)} dimensions")
+    return 0
+
+
+def cmd_identify(args, rip: Ripperr) -> int:
+    feed = _feed_for_identity(args, rip)
+    if feed is None:
+        return 1
+    if args.llm and not rip.cfg.deepinfra_token:
+        print("set RIPPERR_DEEPINFRA_TOKEN (or DEEPINFRA_TOKEN) to use --llm", file=sys.stderr)
+        return 1
+    if not rip.speaker_profiles(feed.id):
+        rip.rebuild_speaker_profiles(feed.id)
+    episodes = [episode for episode in rip.episodes(status="done") if episode.feed_id == feed.id]
+    for episode in sorted(episodes, key=lambda item: (item.published or "", item.id), reverse=True):
+        print(f"\n{episode.title or episode.guid}")
+        for match in rip.speaker_matches(episode.guid):
+            print(f"  {match.speaker} -> {match.name} ({match.score:.3f}, {match.sample_count} samples)")
+        for hint in rip.guest_hints(episode.guid, use_llm=args.llm):
+            print(f"  guest hint -> {hint.name} [{hint.source}, {hint.confidence:.2f}]: {hint.evidence}")
+    return 0
+
+
 def cmd_serve(args, rip: Ripperr) -> int:
     from .server import serve
 
@@ -184,6 +227,15 @@ def build_parser() -> argparse.ArgumentParser:
     cal.add_argument("--feed", type=int, help="feed id; defaults to the On The Couch feed")
     cal.add_argument("--identity", default="Sigmund Bloom")
     cal.set_defaults(func=cmd_calibrate)
+
+    profiles = sub.add_parser("profiles", help="rebuild show-level speaker voice profiles")
+    profiles.add_argument("--feed", type=int, help="feed id; defaults to the On The Couch feed")
+    profiles.set_defaults(func=cmd_profiles)
+
+    ident = sub.add_parser("identify", help="show voice matches and guest-name hints")
+    ident.add_argument("--feed", type=int, help="feed id; defaults to the On The Couch feed")
+    ident.add_argument("--llm", action="store_true", help="also ask DeepInfra for guest-name hints")
+    ident.set_defaults(func=cmd_identify)
 
     sv = sub.add_parser("serve", help="serve the transcript change feed over HTTP")
     sv.add_argument("--host", default="127.0.0.1")

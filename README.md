@@ -74,6 +74,9 @@ Settings come from the environment:
 | `RIPPERR_LANGUAGE` | force a language instead of auto-detecting |
 | `RIPPERR_KEEP_AUDIO=0` | delete audio after processing |
 | `RIPPERR_GLOSSARY` | glossary file (default `<root>/glossary.txt`) |
+| `RIPPERR_DEEPINFRA_TOKEN` | optional DeepInfra token for LLM guest extraction (`DEEPINFRA_TOKEN` also works) |
+| `RIPPERR_DEEPINFRA_MODEL` | DeepInfra model (default `deepseek-ai/DeepSeek-V4-Flash-0731`) |
+| `RIPPERR_DEEPINFRA_BASE_URL` | DeepInfra OpenAI-compatible base URL |
 
 Run the tests with `uv pip install pytest && python -m pytest tests`.
 
@@ -155,17 +158,15 @@ login screen; the optional API bearer token is supplied through the frontend
 environment when the server was started with `--token`.
 
 ```bash
-# terminal 1
-ripperr serve --token "$RIPPERR_TOKEN"
-
-# terminal 2
-cd frontend
-cp .env.example .env.local  # set VITE_RIPPERR_TOKEN if the server uses --token
-npm install
-npm run dev
+./scripts/start-local.sh
+# ...work...
+./scripts/stop-local.sh
 ```
 
-Open the Vite URL shown in the terminal (normally `http://localhost:5173`).
+This starts the API on `http://127.0.0.1:8876` and the Vite dashboard on
+`http://127.0.0.1:5174`; logs and PID files live under `.local/`.
+For manual startup, the API and frontend commands above remain valid. Open the
+Vite URL shown in the terminal.
 The dev server proxies `/healthz` and `/v1` to the local Ripperr server. Set
 `RIPPERR_API_SERVER` when the API is on a non-default local port.
 
@@ -193,8 +194,13 @@ current one.
 - **Speaker labels are per-episode.** `SPEAKER_00` in one episode has no relation
   to `SPEAKER_00` in the next. On Mac/Senko, the pipeline now stores one CAM++
   centroid per episode speaker as a local `SpeakerEmbedding` sample.
-  `speaker_matches()` can suggest names from manually enrolled samples on the
-  same feed, but it never auto-applies a match.
+  `ripperr profiles --feed ID` builds show-level centroids from recurring manual
+  labels (at least two samples), and `speaker_matches()` can suggest names from
+  those profiles without auto-applying a match. `guest_hints()` separately
+  surfaces explicit guest-name phrases from episode context; when a DeepInfra
+  token is configured it also asks the LLM for structured guest candidates. It
+  is not voice identification. Use `ripperr identify --feed ID --llm` to force
+  the LLM path for a report.
 - **Overlapping speech** degrades attribution, as it does in every system.
 - **Hallucination on silence.** `condition_on_previous_text=False` limits runaway
   repetition loops but doesn't eliminate them on long musical interludes.

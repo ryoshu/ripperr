@@ -28,10 +28,11 @@ from .models import (
     SpeakerEmbedding,
     SpeakerMatch,
     SpeakerName,
+    SpeakerProfile,
     Turn,
 )
 
-SCHEMA_VERSION = 7
+SCHEMA_VERSION = 8
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS feeds (
@@ -101,6 +102,15 @@ CREATE TABLE IF NOT EXISTS speaker_embeddings (
     embedding    TEXT NOT NULL,
     updated_at   TEXT NOT NULL,
     PRIMARY KEY (episode_guid, speaker)
+);
+
+CREATE TABLE IF NOT EXISTS speaker_profiles (
+    feed_id      INTEGER NOT NULL REFERENCES feeds(id) ON DELETE CASCADE,
+    name         TEXT NOT NULL,
+    embedding    TEXT NOT NULL,
+    sample_count INTEGER NOT NULL,
+    updated_at   TEXT NOT NULL,
+    PRIMARY KEY (feed_id, name)
 );
 
 CREATE TABLE IF NOT EXISTS turns (
@@ -266,6 +276,18 @@ class Store:
                     embedding    TEXT NOT NULL,
                     updated_at   TEXT NOT NULL,
                     PRIMARY KEY (episode_guid, speaker)
+                )"""
+            )
+
+        if version < 8:
+            self.conn.execute(
+                """CREATE TABLE IF NOT EXISTS speaker_profiles (
+                    feed_id      INTEGER NOT NULL REFERENCES feeds(id) ON DELETE CASCADE,
+                    name         TEXT NOT NULL,
+                    embedding    TEXT NOT NULL,
+                    sample_count INTEGER NOT NULL,
+                    updated_at   TEXT NOT NULL,
+                    PRIMARY KEY (feed_id, name)
                 )"""
             )
 
@@ -557,6 +579,65 @@ class Store:
             for row in rows
         ]
 
+    def speaker_profiles(self, feed_id: int) -> list[SpeakerProfile]:
+        rows = self.conn.execute(
+            "SELECT feed_id, name, embedding, sample_count, updated_at "
+            "FROM speaker_profiles WHERE feed_id = ? ORDER BY name",
+            (feed_id,),
+        )
+        return [
+            SpeakerProfile(
+                feed_id=row["feed_id"],
+                name=row["name"],
+                embedding=tuple(json.loads(row["embedding"])),
+                sample_count=row["sample_count"],
+                updated_at=row["updated_at"],
+            )
+            for row in rows
+        ]
+
+    def rebuild_speaker_profiles(self, feed_id: int) -> list[SpeakerProfile]:
+        """Build one normalized centroid per manually named identity in a feed."""
+        rows = self.conn.execute(
+            """SELECT sn.name, se.embedding
+               FROM speaker_names sn
+               JOIN episodes e ON e.guid = sn.episode_guid
+               JOIN speaker_embeddings se
+                 ON se.episode_guid = sn.episode_guid AND se.speaker = sn.speaker
+               WHERE e.feed_id = ? AND sn.method = 'manual'
+               ORDER BY sn.name, sn.episode_guid, sn.speaker""",
+            (feed_id,),
+        )
+        samples: dict[str, tuple[str, list[tuple[float, ...]]]] = {}
+        for row in rows:
+            vector = tuple(float(value) for value in json.loads(row["embedding"]))
+            key = row["name"].casefold()
+            if key not in samples:
+                samples[key] = (row["name"], [])
+            samples[key][1].append(vector)
+
+        profiles: list[SpeakerProfile] = []
+        now = _now()
+        with self.tx() as c:
+            c.execute("DELETE FROM speaker_profiles WHERE feed_id = ?", (feed_id,))
+            for name, vectors in samples.values():
+                # A single labeled guest clip is useful for calibration, but it
+                # is not a recurring show identity. Requiring two samples keeps
+                # one-off guest labels from becoming false-positive profiles.
+                if len(vectors) < 2:
+                    continue
+                centroid = _centroid(vectors)
+                if centroid is None:
+                    continue
+                c.execute(
+                    """INSERT INTO speaker_profiles
+                       (feed_id, name, embedding, sample_count, updated_at)
+                       VALUES (?, ?, ?, ?, ?)""",
+                    (feed_id, name, json.dumps(centroid), len(vectors), now),
+                )
+                profiles.append(SpeakerProfile(feed_id, name, centroid, len(vectors), now))
+        return profiles
+
     def speaker_matches(self, episode_guid: str, min_score: float = 0.70) -> list[SpeakerMatch]:
         episode = self.conn.execute(
             "SELECT feed_id FROM episodes WHERE guid = ?", (episode_guid,)
@@ -565,24 +646,36 @@ class Store:
             raise LookupError(f"no episode {episode_guid}")
 
         targets = self.speaker_embeddings(episode_guid)
-        rows = self.conn.execute(
-            """SELECT sn.name, se.embedding
-               FROM speaker_names sn
-               JOIN episodes e ON e.guid = sn.episode_guid
-               JOIN speaker_embeddings se
-                 ON se.episode_guid = sn.episode_guid AND se.speaker = sn.speaker
-               WHERE e.feed_id = ? AND e.guid != ?""",
-            (episode["feed_id"], episode_guid),
-        )
-        profiles: dict[str, list[tuple[float, ...]]] = {}
-        for row in rows:
-            profiles.setdefault(row["name"], []).append(tuple(json.loads(row["embedding"])))
+        stored_profiles = self.speaker_profiles(episode["feed_id"])
+        if stored_profiles:
+            profiles = [
+                (profile.name, profile.embedding, profile.sample_count)
+                for profile in stored_profiles
+            ]
+        else:
+            rows = self.conn.execute(
+                """SELECT sn.name, se.embedding
+                   FROM speaker_names sn
+                   JOIN episodes e ON e.guid = sn.episode_guid
+                   JOIN speaker_embeddings se
+                     ON se.episode_guid = sn.episode_guid AND se.speaker = sn.speaker
+                   WHERE e.feed_id = ? AND e.guid != ? AND sn.method = 'manual'""",
+                (episode["feed_id"], episode_guid),
+            )
+            samples: dict[str, list[tuple[float, ...]]] = {}
+            for row in rows:
+                samples.setdefault(row["name"], []).append(tuple(json.loads(row["embedding"])))
+            profiles = [
+                (name, centroid, len(samples[name]))
+                for name, vectors in samples.items()
+                if (centroid := _centroid(vectors)) is not None
+            ]
 
         matches = []
         for target in targets:
             candidates = [
-                (name, max(_cosine(target.embedding, sample) for sample in samples), len(samples))
-                for name, samples in profiles.items()
+                (name, _cosine(target.embedding, embedding), sample_count)
+                for name, embedding, sample_count in profiles
             ]
             if not candidates:
                 continue
@@ -869,3 +962,16 @@ def _cosine(left: Sequence[float], right: Sequence[float]) -> float:
     if not left_norm or not right_norm:
         return -1.0
     return sum(a * b for a, b in zip(left, right)) / (left_norm * right_norm)
+
+
+def _centroid(vectors: Sequence[Sequence[float]]) -> tuple[float, ...] | None:
+    if not vectors:
+        return None
+    size = len(vectors[0])
+    if not size or any(len(vector) != size for vector in vectors):
+        return None
+    mean = [sum(vector[index] for vector in vectors) / len(vectors) for index in range(size)]
+    norm = math.sqrt(sum(value * value for value in mean))
+    if not norm:
+        return None
+    return tuple(value / norm for value in mean)

@@ -155,6 +155,11 @@ def make_handler(cfg: Config, token: str | None = None):
                     body["corrections"] = [c.__dict__ for c in transcript.corrections]
                     body["turns"] = [t.__dict__ for t in transcript.turns]
                     body["speaker_names"] = [_speaker_json(name) for name in transcript.speaker_names]
+                    body["speaker_matches"] = [
+                        _speaker_match_json(match)
+                        for match in rip.speaker_matches(guid)
+                    ]
+                    body["guest_hints"] = [hint.__dict__ for hint in rip.guest_hints(guid)]
                     status = HTTPStatus.OK
                     etag = '"' + hashlib.sha256(json.dumps(
                         body, sort_keys=True, separators=(",", ":"), default=str
@@ -309,6 +314,16 @@ def _speaker_json(mapping) -> dict[str, object]:
         "method": mapping.method,
         "confidence": mapping.confidence,
         "updated_at": mapping.updated_at,
+    }
+
+
+def _speaker_match_json(match) -> dict[str, object]:
+    return {
+        "episode_guid": match.episode_guid,
+        "speaker": match.speaker,
+        "name": match.name,
+        "score": match.score,
+        "sample_count": match.sample_count,
     }
 
 

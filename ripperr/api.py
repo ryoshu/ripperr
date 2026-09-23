@@ -20,6 +20,7 @@ import re
 from pathlib import Path
 
 from .config import Config, default_config
+from .deepinfra import DeepInfraError, guest_hints as deepinfra_guest_hints
 from .glossary import load as load_glossary
 from .models import (
     Change,
@@ -29,8 +30,10 @@ from .models import (
     SpeakerEmbedding,
     SpeakerMatch,
     SpeakerName,
+    SpeakerProfile,
     Transcript,
 )
+from .identity import guest_hints as extract_guest_hints
 from .pipeline import Log, Processor, remerge, sync_feeds
 from .store import Store
 
@@ -153,6 +156,7 @@ class Ripperr:
             proc = Processor(self.cfg, self.log, self._terms(glossary))
             for ep in todo:
                 proc.process(self.store, ep, force=force)
+                self.store.rebuild_speaker_profiles(ep.feed_id)
             return [self.store.episode(ep.guid) for ep in todo]
 
     def remerge(self, ref: str | int, *, glossary: list[str] | None = None) -> Episode:
@@ -160,6 +164,7 @@ class Ripperr:
         run it after changing the glossary. Bumps the episode's revision."""
         ep = self._episode(ref)
         remerge(self.store, self.cfg, ep, self._terms(glossary), self.log)
+        self.store.rebuild_speaker_profiles(ep.feed_id)
         return self.store.episode(ep.guid)
 
     # ---- read ------------------------------------------------------------
@@ -205,11 +210,56 @@ class Ripperr:
         """Return locally stored per-episode voice samples, when available."""
         return self.store.speaker_embeddings(self._episode(ref).guid)
 
+    def speaker_profiles(self, feed_id: int) -> list[SpeakerProfile]:
+        """Return show-level identity profiles built from manual speaker labels."""
+        return self.store.speaker_profiles(feed_id)
+
+    def rebuild_speaker_profiles(self, feed_id: int) -> list[SpeakerProfile]:
+        """Rebuild show-level normalized voice centroids from manual labels."""
+        if self.feed(feed_id) is None:
+            raise LookupError(f"no feed {feed_id}")
+        return self.store.rebuild_speaker_profiles(feed_id)
+
     def speaker_matches(self, ref: str | int, min_score: float = 0.70) -> list[SpeakerMatch]:
-        """Suggest names from manually enrolled samples in the same feed."""
+        """Suggest names from the show's manually enrolled voice profiles."""
         if not 0 <= min_score <= 1:
             raise ValueError("min_score must be between 0 and 1")
         return self.store.speaker_matches(self._episode(ref).guid, min_score)
+
+    def guest_hints(self, ref: str | int, *, use_llm: bool | None = None):
+        """Extract conservative guest-name hints from episode context.
+
+        This is text evidence, not a voice identification result. The most
+        recurrent show-level profile is treated as the host and filtered from
+        the hints.
+        """
+        episode = self._episode(ref)
+        transcript = self.transcript(episode.guid)
+        profiles = self.speaker_profiles(episode.feed_id)
+        host_name = max(profiles, key=lambda profile: profile.sample_count).name if profiles else None
+        hints = extract_guest_hints(
+            episode,
+            transcript.turns if transcript else (),
+            host_name=host_name,
+        )
+        if use_llm is None:
+            use_llm = bool(self.cfg.deepinfra_token)
+        if use_llm and self.cfg.deepinfra_token:
+            try:
+                hints.extend(
+                    deepinfra_guest_hints(
+                        episode,
+                        transcript.turns if transcript else (),
+                        token=self.cfg.deepinfra_token,
+                        model=self.cfg.deepinfra_model,
+                        base_url=self.cfg.deepinfra_base_url,
+                        host_name=host_name,
+                        existing_names={hint.name for hint in hints},
+                    )
+                )
+            except DeepInfraError as exc:
+                self.log(f"  ! DeepInfra guest extraction skipped: {exc}")
+        return hints
 
     def set_speaker_name(self, ref: str | int, speaker: str, name: str) -> SpeakerName:
         ep = self._episode(ref)
@@ -221,7 +271,9 @@ class Ripperr:
             raise ValueError("name is required")
         if len(speaker) > 200 or len(name) > 200:
             raise ValueError("speaker and name must be 200 characters or fewer")
-        return self.store.set_speaker_name(ep.guid, speaker, name)
+        mapping = self.store.set_speaker_name(ep.guid, speaker, name)
+        self.store.rebuild_speaker_profiles(ep.feed_id)
+        return mapping
 
     def delete_speaker_name(self, ref: str | int, speaker: str) -> None:
         speaker = speaker.strip()
@@ -229,7 +281,9 @@ class Ripperr:
             raise ValueError("speaker is required")
         if len(speaker) > 200:
             raise ValueError("speaker must be 200 characters or fewer")
-        self.store.delete_speaker_name(self._episode(ref).guid, speaker)
+        ep = self._episode(ref)
+        self.store.delete_speaker_name(ep.guid, speaker)
+        self.store.rebuild_speaker_profiles(ep.feed_id)
 
     def search(self, query: str, limit: int = 20) -> list[Hit]:
         return self.store.search(query, limit)

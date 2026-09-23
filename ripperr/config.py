@@ -77,6 +77,18 @@ class Config:
     ))
     language: str | None = field(default_factory=lambda: os.environ.get("RIPPERR_LANGUAGE") or None)
 
+    # Optional text-side guest extraction. DeepInfra exposes an OpenAI-compatible
+    # endpoint, so this stays a small requests-based integration.
+    deepinfra_token: str | None = field(default_factory=lambda: (
+        os.environ.get("RIPPERR_DEEPINFRA_TOKEN") or os.environ.get("DEEPINFRA_TOKEN")
+    ))
+    deepinfra_model: str = field(default_factory=lambda: os.environ.get(
+        "RIPPERR_DEEPINFRA_MODEL", "deepseek-ai/DeepSeek-V4-Flash-0731"
+    ))
+    deepinfra_base_url: str = field(default_factory=lambda: os.environ.get(
+        "RIPPERR_DEEPINFRA_BASE_URL", "https://api.deepinfra.com/v1/openai"
+    ).rstrip("/"))
+
     # Turn segmentation
     max_turn_gap: float = 2.0  # seconds of silence that forces a new turn
     orphan_word_gap: float = 0.5  # how far a word may reach for a neighbouring speaker
