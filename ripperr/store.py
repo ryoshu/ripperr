@@ -596,7 +596,13 @@ class Store:
             for row in rows
         ]
 
-    def rebuild_speaker_profiles(self, feed_id: int) -> list[SpeakerProfile]:
+    def rebuild_speaker_profiles(
+        self,
+        feed_id: int,
+        *,
+        changed_guid: str | None = None,
+        notify_changes: bool = True,
+    ) -> list[SpeakerProfile]:
         """Build one normalized centroid per manually named identity in a feed."""
         rows = self.conn.execute(
             """SELECT sn.name, se.embedding
@@ -618,25 +624,68 @@ class Store:
 
         profiles: list[SpeakerProfile] = []
         now = _now()
+        previous = {
+            row["name"]: (tuple(json.loads(row["embedding"])), row["sample_count"])
+            for row in self.conn.execute(
+                "SELECT name, embedding, sample_count FROM speaker_profiles WHERE feed_id = ?",
+                (feed_id,),
+            )
+        }
+        current = {
+            name: (centroid, len(vectors))
+            for name, vectors in samples.values()
+            if len(vectors) >= 2 and (centroid := _centroid(vectors)) is not None
+        }
         with self.tx() as c:
             c.execute("DELETE FROM speaker_profiles WHERE feed_id = ?", (feed_id,))
-            for name, vectors in samples.values():
-                # A single labeled guest clip is useful for calibration, but it
-                # is not a recurring show identity. Requiring two samples keeps
-                # one-off guest labels from becoming false-positive profiles.
-                if len(vectors) < 2:
-                    continue
-                centroid = _centroid(vectors)
-                if centroid is None:
-                    continue
+            for name, (centroid, sample_count) in current.items():
                 c.execute(
                     """INSERT INTO speaker_profiles
                        (feed_id, name, embedding, sample_count, updated_at)
                        VALUES (?, ?, ?, ?, ?)""",
-                    (feed_id, name, json.dumps(centroid), len(vectors), now),
+                    (feed_id, name, json.dumps(centroid), sample_count, now),
                 )
-                profiles.append(SpeakerProfile(feed_id, name, centroid, len(vectors), now))
+                profiles.append(SpeakerProfile(feed_id, name, centroid, sample_count, now))
+
+            if notify_changes and previous != current:
+                self._invalidate_feed_metadata(c, feed_id, changed_guid, now)
         return profiles
+
+    def invalidate_feed_metadata(self, feed_id: int, *, changed_guid: str | None = None) -> None:
+        """Notify change-feed consumers that shared speaker labels changed."""
+        now = _now()
+        with self.tx() as c:
+            self._invalidate_feed_metadata(c, feed_id, changed_guid, now)
+
+    def _invalidate_feed_metadata(
+        self,
+        c: sqlite3.Connection,
+        feed_id: int,
+        changed_guid: str | None,
+        now: str,
+    ) -> None:
+        for row in c.execute(
+            "SELECT id, guid, revision FROM episodes WHERE feed_id = ?", (feed_id,)
+        ).fetchall():
+            if row["guid"] == changed_guid:
+                continue
+            c.execute("UPDATE episodes SET updated_at = ? WHERE id = ?", (now, row["id"]))
+            self._insert_change(c, row["guid"], row["revision"], "metadata")
+
+    def most_common_manual_speaker_name(self, feed_id: int) -> str | None:
+        """Return a recurring manual label when a profile table has no entry yet."""
+        row = self.conn.execute(
+            """SELECT sn.name, COUNT(DISTINCT sn.episode_guid) AS samples
+               FROM speaker_names sn
+               JOIN episodes e ON e.guid = sn.episode_guid
+               WHERE e.feed_id = ? AND sn.method = 'manual'
+               GROUP BY sn.name COLLATE NOCASE
+               HAVING COUNT(DISTINCT sn.episode_guid) >= 2
+               ORDER BY samples DESC, sn.name COLLATE NOCASE
+               LIMIT 1""",
+            (feed_id,),
+        ).fetchone()
+        return row["name"] if row else None
 
     def speaker_matches(self, episode_guid: str, min_score: float = 0.70) -> list[SpeakerMatch]:
         episode = self.conn.execute(
@@ -695,6 +744,19 @@ class Store:
         method: str = "manual",
         confidence: float | None = None,
     ) -> SpeakerName:
+        return self._set_speaker_name(
+            episode_guid, speaker, name, method=method, confidence=confidence
+        )[0]
+
+    def _set_speaker_name(
+        self,
+        episode_guid: str,
+        speaker: str,
+        name: str,
+        *,
+        method: str = "manual",
+        confidence: float | None = None,
+    ) -> tuple[SpeakerName, bool]:
         with self.tx() as c:
             episode = c.execute(
                 "SELECT id, revision FROM episodes WHERE guid = ?", (episode_guid,)
@@ -711,7 +773,8 @@ class Store:
                 "WHERE episode_guid = ? AND speaker = ?",
                 (episode_guid, speaker),
             ).fetchone()
-            if existing is None or tuple(existing) != (name, method, confidence):
+            changed = existing is None or tuple(existing) != (name, method, confidence)
+            if changed:
                 now = _now()
                 c.execute(
                     """INSERT INTO speaker_names
@@ -736,9 +799,9 @@ class Store:
             ).fetchone()
             if row is None:
                 raise LookupError(f"no speaker name for {speaker}")
-            return SpeakerName(**dict(row))
+            return SpeakerName(**dict(row)), changed
 
-    def delete_speaker_name(self, episode_guid: str, speaker: str) -> None:
+    def delete_speaker_name(self, episode_guid: str, speaker: str) -> bool:
         with self.tx() as c:
             episode = c.execute(
                 "SELECT revision FROM episodes WHERE guid = ?", (episode_guid,)
@@ -750,11 +813,13 @@ class Store:
                 (episode_guid, speaker),
             ).rowcount
             if deleted:
+                now = _now()
                 c.execute(
                     "UPDATE episodes SET updated_at = ? WHERE guid = ?",
-                    (_now(), episode_guid),
+                    (now, episode_guid),
                 )
                 self._insert_change(c, episode_guid, episode["revision"], "metadata")
+        return bool(deleted)
 
     # ---- transcripts -----------------------------------------------------
 

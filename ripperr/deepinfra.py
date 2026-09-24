@@ -69,6 +69,8 @@ def guest_hints(
         response.raise_for_status()
         body = response.json()
         content = body["choices"][0]["message"]["content"]
+        if not isinstance(content, str):
+            raise ValueError("message.content must be a string")
         parsed = json.loads(_strip_json_fence(content))
     except (requests.RequestException, ValueError, KeyError, IndexError, TypeError) as exc:
         raise DeepInfraError(f"guest extraction failed: {exc}") from exc
@@ -80,6 +82,8 @@ def guest_hints(
     seen = {name.casefold() for name in (existing_names or set())}
     if host_name:
         seen.add(host_name.casefold())
+    evidence_sources = [context["title"], context["summary"]]
+    evidence_sources.extend(turn["text"] for turn in opening_turns)
     hints: list[GuestHint] = []
     for item in guests:
         if not isinstance(item, dict) or not isinstance(item.get("name"), str):
@@ -88,10 +92,15 @@ def guest_hints(
         key = name.casefold()
         if not name or len(name) > 120 or key in seen:
             continue
-        evidence = item.get("evidence", "")
-        evidence = " ".join(evidence.split()) if isinstance(evidence, str) else ""
-        if len(evidence) > 240:
-            evidence = evidence[:237] + "..."
+        evidence = item.get("evidence")
+        if (
+            not isinstance(evidence, str)
+            or not evidence
+            or len(evidence) > 240
+            or not any(evidence in source for source in evidence_sources)
+            or key not in evidence.casefold()
+        ):
+            continue
         seen.add(key)
         hints.append(GuestHint(episode.guid, name, "llm", evidence, 0.70))
     return hints

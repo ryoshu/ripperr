@@ -36,6 +36,7 @@ uv venv --python 3.13 && source .venv/bin/activate
 uv pip install -e ".[apple]"        # Apple Silicon
 # Linux: install ffmpeg with the system package manager, then use .[linux]
 # uv pip install -e ".[linux]"
+npm ci --prefix frontend           # dashboard dependencies
 ```
 
 The `apple` extra installs Senko from a pinned git commit, the one this code was
@@ -154,8 +155,9 @@ See the [editable architecture diagram](docs/architecture.drawio).
 
 The repo includes a small local React + HeroUI dashboard for feed administration,
 episode status, transcript review, and episode-scoped speaker names. It has no
-login screen; the optional API bearer token is supplied through the frontend
-environment when the server was started with `--token`.
+login screen; set `RIPPERR_API_TOKEN` in `.env` to protect the local API. The
+startup script passes it to the dashboard as well. The server also accepts
+`--token` when started manually.
 
 ```bash
 ./scripts/start-local.sh
@@ -197,10 +199,9 @@ current one.
   `ripperr profiles --feed ID` builds show-level centroids from recurring manual
   labels (at least two samples), and `speaker_matches()` can suggest names from
   those profiles without auto-applying a match. `guest_hints()` separately
-  surfaces explicit guest-name phrases from episode context; when a DeepInfra
-  token is configured it also asks the LLM for structured guest candidates. It
-  is not voice identification. Use `ripperr identify --feed ID --llm` to force
-  the LLM path for a report.
+  surfaces explicit guest-name phrases from episode context. Normal detail
+  reads stay local; use `ripperr identify --feed ID --llm` to ask DeepInfra for
+  additional candidates. It is not voice identification.
 - **Overlapping speech** degrades attribution, as it does in every system.
 - **Hallucination on silence.** `condition_on_previous_text=False` limits runaway
   repetition loops but doesn't eliminate them on long musical interludes.

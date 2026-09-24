@@ -117,6 +117,14 @@ class Transcript:
 
 
 @dataclass(frozen=True)
+class EpisodeDetail:
+    transcript: Transcript
+    feed: Feed
+    speaker_matches: list[SpeakerMatch]
+    guest_hints: list[GuestHint]
+
+
+@dataclass(frozen=True)
 class Change:
     seq: int
     episode_guid: str

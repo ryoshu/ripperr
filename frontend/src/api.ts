@@ -44,9 +44,27 @@ export type SpeakerName = {
   updated_at: string
 }
 
+export type SpeakerMatch = {
+  episode_guid: string
+  speaker: string
+  name: string
+  score: number
+  sample_count: number
+}
+
+export type GuestHint = {
+  episode_guid: string
+  name: string
+  source: string
+  evidence: string
+  confidence: number
+}
+
 export type EpisodeDetail = Episode & {
   corrections: Correction[]
   speaker_names: SpeakerName[]
+  speaker_matches: SpeakerMatch[]
+  guest_hints: GuestHint[]
   turns: Turn[]
 }
 

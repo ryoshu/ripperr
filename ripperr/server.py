@@ -141,15 +141,16 @@ def make_handler(cfg: Config, token: str | None = None):
             prefix = "/v1/episodes/"
             if parsed.path.startswith(prefix) and parsed.path.count("/") == 3:
                 guid = unquote(parsed.path[len(prefix):])
-                transcript = rip.transcript(guid)
-                if transcript is None:
+                detail = rip.episode_detail(guid)
+                if detail is None:
                     body = {"error": "not found"}
                     status = HTTPStatus.NOT_FOUND
                     etag = None
                 else:
+                    transcript = detail.transcript
                     body = _episode_json(
                         transcript.episode,
-                        rip.feed(transcript.episode.feed_id),
+                        detail.feed,
                         include_audio=True,
                     )
                     body["corrections"] = [c.__dict__ for c in transcript.corrections]
@@ -157,9 +158,9 @@ def make_handler(cfg: Config, token: str | None = None):
                     body["speaker_names"] = [_speaker_json(name) for name in transcript.speaker_names]
                     body["speaker_matches"] = [
                         _speaker_match_json(match)
-                        for match in rip.speaker_matches(guid)
+                        for match in detail.speaker_matches
                     ]
-                    body["guest_hints"] = [hint.__dict__ for hint in rip.guest_hints(guid)]
+                    body["guest_hints"] = [hint.__dict__ for hint in detail.guest_hints]
                     status = HTTPStatus.OK
                     etag = '"' + hashlib.sha256(json.dumps(
                         body, sort_keys=True, separators=(",", ":"), default=str

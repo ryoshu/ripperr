@@ -20,7 +20,7 @@ fi
 API_PORT="${RIPPERR_API_PORT:-8876}"
 WEB_PORT="${RIPPERR_WEB_PORT:-5174}"
 
-for command in "$ROOT_DIR/.venv/bin/python" npm lsof; do
+for command in "$ROOT_DIR/.venv/bin/python" npm lsof curl; do
   if [[ "$command" == */* ]]; then
     if [[ ! -x "$command" ]]; then
       echo "missing required command: $command" >&2
@@ -32,6 +32,11 @@ for command in "$ROOT_DIR/.venv/bin/python" npm lsof; do
   fi
 done
 
+if [[ ! -x "$ROOT_DIR/frontend/node_modules/.bin/vite" ]]; then
+  echo "frontend dependencies are missing; run npm ci --prefix frontend" >&2
+  exit 1
+fi
+
 for port in "$API_PORT" "$WEB_PORT"; do
   owner="$(lsof -nP -tiTCP:"$port" -sTCP:LISTEN | head -n 1 || true)"
   if [[ -n "$owner" ]]; then
@@ -41,9 +46,6 @@ for port in "$API_PORT" "$WEB_PORT"; do
 done
 
 api_args=("$ROOT_DIR/.venv/bin/python" -m ripperr.cli serve --host 127.0.0.1 --port "$API_PORT")
-if [[ -n "${RIPPERR_API_TOKEN:-}" ]]; then
-  api_args+=(--token "$RIPPERR_API_TOKEN")
-fi
 
 (
   cd "$ROOT_DIR"
@@ -51,25 +53,45 @@ fi
   echo $! >"$API_PID"
 )
 
+cleanup_on_error() {
+  local status=$?
+  if (( status != 0 )); then
+    bash "$ROOT_DIR/scripts/stop-local.sh" || true
+  fi
+}
+trap cleanup_on_error EXIT
+
 (
   cd "$ROOT_DIR/frontend"
   nohup env RIPPERR_API_SERVER="http://127.0.0.1:$API_PORT" \
+    VITE_RIPPERR_TOKEN="${RIPPERR_API_TOKEN:-}" \
     npm run dev -- --host 127.0.0.1 --port "$WEB_PORT" \
     >"$WEB_LOG" 2>&1 </dev/null &
   echo $! >"$WEB_PID"
 )
 
-sleep 0.5
-for item in "API:$API_PID:$API_LOG" "dashboard:$WEB_PID:$WEB_LOG"; do
-  IFS=: read -r label pid_file log_file <<<"$item"
+wait_for_ready() {
+  local label="$1" url="$2" pid_file="$3" log_file="$4"
+  local pid
   pid="$(tr -d '[:space:]' <"$pid_file")"
-  if ! kill -0 "$pid" 2>/dev/null; then
-    echo "$label failed to start; see $log_file" >&2
-    sed -n '1,80p' "$log_file" >&2 || true
-    exit 1
-  fi
-done
+  for _ in {1..100}; do
+    if ! kill -0 "$pid" 2>/dev/null; then
+      break
+    fi
+    if curl -fsS --max-time 1 "$url" >/dev/null; then
+      return 0
+    fi
+    sleep 0.2
+  done
+  echo "$label failed to become ready; see $log_file" >&2
+  sed -n '1,80p' "$log_file" >&2 || true
+  return 1
+}
+
+wait_for_ready "API" "http://127.0.0.1:$API_PORT/healthz" "$API_PID" "$API_LOG"
+wait_for_ready "dashboard" "http://127.0.0.1:$WEB_PORT/" "$WEB_PID" "$WEB_LOG"
 
 echo "Ripperr API: http://127.0.0.1:$API_PORT"
 echo "Ripperr dashboard: http://127.0.0.1:$WEB_PORT"
 echo "logs: $API_LOG and $WEB_LOG"
+trap - EXIT

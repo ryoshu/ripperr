@@ -676,6 +676,54 @@ function EpisodeDetailView({ episode, error, onBack, onReload }: { episode: Epis
 
       <Card shadow="sm" className="panel"><CardBody><Metadata episode={episode} speakerEditor={<SpeakerEditor episode={{ ...episode, speaker_names: names }} onChange={setNames} />} onControllerReady={handleControllerReady} onTimeUpdate={handleTimeUpdate} /></CardBody></Card>
 
+      <Card shadow="sm" className="panel">
+        <CardHeader className="panel-header">
+          <div>
+            <h2>Identity suggestions</h2>
+            <p className="muted">Voice matches use labeled samples; guest hints include text evidence.</p>
+          </div>
+        </CardHeader>
+        <Divider />
+        <CardBody className="identity-grid">
+          <section className="identity-section">
+            <div className="identity-section-heading">
+              <h3>Voice matches</h3>
+              <Chip size="sm" variant="flat">{episode.speaker_matches.length}</Chip>
+            </div>
+            {episode.speaker_matches.length ? (
+              <div className="identity-list">
+                {episode.speaker_matches.map((match) => (
+                  <div className="identity-row" key={match.speaker}>
+                    <div className="identity-name"><strong>{match.name}</strong><span className="mono muted">{match.speaker}</span></div>
+                    <div className="identity-meta"><span>score {match.score.toFixed(3)}</span><span>{match.sample_count} samples</span></div>
+                  </div>
+                ))}
+              </div>
+            ) : <p className="empty compact-empty">No voice matches yet.</p>}
+          </section>
+
+          <section className="identity-section">
+            <div className="identity-section-heading">
+              <h3>Guest hints</h3>
+              <Chip size="sm" variant="flat">{episode.guest_hints.length}</Chip>
+            </div>
+            {episode.guest_hints.length ? (
+              <div className="identity-list">
+                {episode.guest_hints.map((hint, index) => (
+                  <div className="identity-row guest-hint" key={`${hint.name}-${hint.source}-${index}`}>
+                    <div className="identity-name"><strong>{hint.name}</strong><Chip size="sm" variant="flat">{hint.source}</Chip></div>
+                    <Tooltip content="Source weight, not a statistical probability.">
+                      <span className="identity-weight">weight {hint.confidence.toFixed(2)}</span>
+                    </Tooltip>
+                    {hint.evidence && <p className="identity-evidence">“{hint.evidence}”</p>}
+                  </div>
+                ))}
+              </div>
+            ) : <p className="empty compact-empty">No guest hints found.</p>}
+          </section>
+        </CardBody>
+      </Card>
+
       <Card shadow="sm" className="panel transcript-panel">
         <CardHeader className="panel-header"><div><h2>Transcript</h2><p className="muted">{episode.turns.length} turns · click a turn to jump</p></div><Button size="sm" variant="light" onPress={() => void onReload()}>Refresh</Button></CardHeader>
         <Divider />

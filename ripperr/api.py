@@ -25,6 +25,7 @@ from .glossary import load as load_glossary
 from .models import (
     Change,
     Episode,
+    EpisodeDetail,
     Feed,
     Hit,
     SpeakerEmbedding,
@@ -156,7 +157,7 @@ class Ripperr:
             proc = Processor(self.cfg, self.log, self._terms(glossary))
             for ep in todo:
                 proc.process(self.store, ep, force=force)
-                self.store.rebuild_speaker_profiles(ep.feed_id)
+                self.store.rebuild_speaker_profiles(ep.feed_id, changed_guid=ep.guid)
             return [self.store.episode(ep.guid) for ep in todo]
 
     def remerge(self, ref: str | int, *, glossary: list[str] | None = None) -> Episode:
@@ -164,7 +165,7 @@ class Ripperr:
         run it after changing the glossary. Bumps the episode's revision."""
         ep = self._episode(ref)
         remerge(self.store, self.cfg, ep, self._terms(glossary), self.log)
-        self.store.rebuild_speaker_profiles(ep.feed_id)
+        self.store.rebuild_speaker_profiles(ep.feed_id, changed_guid=ep.guid)
         return self.store.episode(ep.guid)
 
     # ---- read ------------------------------------------------------------
@@ -193,14 +194,22 @@ class Ripperr:
 
     def transcript(self, ref: str | int) -> Transcript | None:
         with self.store.snapshot():  # episode, turns and corrections from one revision
-            ep = self.episode(ref)
-            if ep is None:
+            return self._transcript(ref)
+
+    def episode_detail(self, ref: str | int) -> EpisodeDetail | None:
+        """Read all fields used by the HTTP detail response from one DB snapshot."""
+        with self.store.snapshot():
+            transcript = self._transcript(ref)
+            if transcript is None:
                 return None
-            return Transcript(
-                ep,
-                self.store.turns(ep.id),
-                self.store.corrections(ep.id),
-                self.store.speaker_names(ep.guid),
+            episode = transcript.episode
+            profiles = self.speaker_profiles(episode.feed_id)
+            host_name = self._host_name(episode.feed_id, profiles)
+            return EpisodeDetail(
+                transcript=transcript,
+                feed=self.store.feed(episode.feed_id),
+                speaker_matches=self.store.speaker_matches(episode.guid),
+                guest_hints=self._guest_hints(episode, transcript, host_name, use_llm=False),
             )
 
     def speaker_names(self, ref: str | int) -> list[SpeakerName]:
@@ -226,24 +235,38 @@ class Ripperr:
             raise ValueError("min_score must be between 0 and 1")
         return self.store.speaker_matches(self._episode(ref).guid, min_score)
 
-    def guest_hints(self, ref: str | int, *, use_llm: bool | None = None):
+    def guest_hints(self, ref: str | int, *, use_llm: bool = False):
         """Extract conservative guest-name hints from episode context.
 
         This is text evidence, not a voice identification result. The most
         recurrent show-level profile is treated as the host and filtered from
         the hints.
         """
-        episode = self._episode(ref)
-        transcript = self.transcript(episode.guid)
-        profiles = self.speaker_profiles(episode.feed_id)
-        host_name = max(profiles, key=lambda profile: profile.sample_count).name if profiles else None
+        with self.store.snapshot():
+            episode = self._episode(ref)
+            transcript = self._transcript(episode.guid)
+            profiles = self.speaker_profiles(episode.feed_id)
+            host_name = self._host_name(episode.feed_id, profiles)
+        return self._guest_hints(episode, transcript, host_name, use_llm=use_llm)
+
+    def _host_name(self, feed_id: int, profiles: list[SpeakerProfile]) -> str | None:
+        if profiles:
+            return max(profiles, key=lambda profile: profile.sample_count).name
+        return self.store.most_common_manual_speaker_name(feed_id)
+
+    def _guest_hints(
+        self,
+        episode: Episode,
+        transcript: Transcript | None,
+        host_name: str | None,
+        *,
+        use_llm: bool,
+    ):
         hints = extract_guest_hints(
             episode,
             transcript.turns if transcript else (),
             host_name=host_name,
         )
-        if use_llm is None:
-            use_llm = bool(self.cfg.deepinfra_token)
         if use_llm and self.cfg.deepinfra_token:
             try:
                 hints.extend(
@@ -271,8 +294,12 @@ class Ripperr:
             raise ValueError("name is required")
         if len(speaker) > 200 or len(name) > 200:
             raise ValueError("speaker and name must be 200 characters or fewer")
-        mapping = self.store.set_speaker_name(ep.guid, speaker, name)
-        self.store.rebuild_speaker_profiles(ep.feed_id)
+        mapping, changed = self.store._set_speaker_name(ep.guid, speaker, name)
+        self.store.rebuild_speaker_profiles(
+            ep.feed_id, changed_guid=ep.guid, notify_changes=False
+        )
+        if changed:
+            self.store.invalidate_feed_metadata(ep.feed_id, changed_guid=ep.guid)
         return mapping
 
     def delete_speaker_name(self, ref: str | int, speaker: str) -> None:
@@ -282,8 +309,12 @@ class Ripperr:
         if len(speaker) > 200:
             raise ValueError("speaker must be 200 characters or fewer")
         ep = self._episode(ref)
-        self.store.delete_speaker_name(ep.guid, speaker)
-        self.store.rebuild_speaker_profiles(ep.feed_id)
+        changed = self.store.delete_speaker_name(ep.guid, speaker)
+        self.store.rebuild_speaker_profiles(
+            ep.feed_id, changed_guid=ep.guid, notify_changes=False
+        )
+        if changed:
+            self.store.invalidate_feed_metadata(ep.feed_id, changed_guid=ep.guid)
 
     def search(self, query: str, limit: int = 20) -> list[Hit]:
         return self.store.search(query, limit)
@@ -315,6 +346,17 @@ class Ripperr:
         if ep is None:
             raise LookupError(f"no episode {ref}")
         return ep
+
+    def _transcript(self, ref: str | int) -> Transcript | None:
+        ep = self.episode(ref)
+        if ep is None:
+            return None
+        return Transcript(
+            ep,
+            self.store.turns(ep.id),
+            self.store.corrections(ep.id),
+            self.store.speaker_names(ep.guid),
+        )
 
     def _terms(self, glossary: list[str] | None) -> list[str]:
         return glossary if glossary is not None else load_glossary(self.cfg.glossary_path)

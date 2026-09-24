@@ -9,13 +9,14 @@ from .models import Episode, GuestHint, Turn
 
 
 _NAME = r"[A-Z][A-Za-z'’.-]+(?:\s+[A-Z][A-Za-z'’.-]+){1,3}"
+_NAME_LIST = rf"{_NAME}(?:(?:\s+and\s+|,\s*(?:and\s+)?){_NAME})*"
 _METADATA_CONTEXT = re.compile(
     rf"\b(?:with|w/|joined by|featuring|feat\.?|talking to|interview with|welcomes)\s+"
-    rf"(?P<names>{_NAME}(?:\s+and\s+{_NAME})?)",
+    rf"(?P<names>{_NAME_LIST})",
 )
 _TRANSCRIPT_CONTEXT = re.compile(
     rf"\b(?:joined by|welcomes?|featuring|interview with|talking (?:to|with)|special guest)\s+"
-    rf"(?P<names>{_NAME}(?:\s+and\s+{_NAME})?)",
+    rf"(?P<names>{_NAME_LIST})",
 )
 _TRAILING_NAME_WORDS = {"like", "that", "so", "the", "to", "for", "is", "are", "you"}
 
@@ -46,7 +47,7 @@ def guest_hints(
         pattern = _TRANSCRIPT_CONTEXT if source == "transcript" else _METADATA_CONTEXT
         for match in pattern.finditer(text):
             evidence = match.group(0).strip(" \t\n-:;,.!?()[]")
-            for candidate in re.split(r"\s+and\s+", match.group("names")):
+            for candidate in re.split(r"\s+and\s+|,\s*(?:and\s+)?", match.group("names")):
                 name = _clean_name(candidate)
                 key = _name_key(name)
                 if not key or key in seen or key == host_key:

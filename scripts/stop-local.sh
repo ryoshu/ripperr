@@ -39,5 +39,7 @@ stop_pid_file() {
   return 1
 }
 
-stop_pid_file "dashboard" "$RUN_DIR/web.pid" "npm run dev"
-stop_pid_file "API" "$RUN_DIR/api.pid" "ripperr.cli serve"
+status=0
+stop_pid_file "dashboard" "$RUN_DIR/web.pid" "npm run dev" || status=$?
+stop_pid_file "API" "$RUN_DIR/api.pid" "ripperr.cli serve" || status=$?
+exit "$status"
