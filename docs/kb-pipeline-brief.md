@@ -13,8 +13,9 @@ Build the layer that turns ripperr transcripts (and later scraped pages) into a 
 | W6. Evaluation set | Done: 22 questions; hit@5 0.91, hit@10 0.95, mean rank 1.7 |
 | Backfill | Done: `ripperr add --backfill N`, `POST /v1/feeds {"backfill": N}` |
 | W3. MCP retrieval server | Done: `https://rickys-mac-pro.taile4827e.ts.net:8443/mcp`, own bearer token |
-| W4. Discovery to subscription | Done: `kb discover` CLI and `kb_discover` / `kb_subscribe` MCP tools; first real subscription still to make |
-| W5. Scraper | Next |
+| W4. Discovery to subscription | Done: `kb discover` CLI and `kb_discover` / `kb_subscribe` MCP tools; first subscription (Fantasy Footballers Dynasty, 5 episodes) made through MCP |
+| W5. Scraper | Next, on the VPS (owner: Ricky) |
+| Dashboard | Done: served by ripperr on the Mac Pro at the API's tailnet address |
 
 ## Context
 
@@ -135,7 +136,7 @@ Runs on the Mac Pro as `com.ryoshu.ripperr-knowledge-base.indexer`, reading ripp
 
 **Known limits.** SearXNG's fyyd engine currently crashes ("unexpected crash"; being fixed on the VPS), so results come from Podchaser alone. Podchaser matches titles and descriptions, so a host's name finds unrelated shows; topic queries work well.
 
-**Done when.** A query for a topic yields feed candidates, confirming one creates a feed in ripperr, and its episodes flow through to the index with no manual steps beyond the confirmation. Candidates verified; the first real subscription (also the first RSS, rather than YouTube, feed on the Mac Pro) is still to make.
+**Done when.** A query for a topic yields feed candidates, confirming one creates a feed in ripperr, and its episodes flow through to the index with no manual steps beyond the confirmation. Verified: Fantasy Footballers Dynasty was subscribed through `kb_subscribe` with `backfill: 5`; its episodes downloaded on the Mac Pro (the first RSS rather than YouTube feed there) and went to the worker.
 
 ### W5. Scraper hookup (after W3)
 
@@ -152,6 +153,22 @@ Runs on the Mac Pro as `com.ryoshu.ripperr-knowledge-base.indexer`, reading ripp
 ### W6. Evaluation set (done)
 
 `eval/podcast_questions.jsonl` in the knowledge-base repo: 22 questions tied to real passages, with episode guids and approximate timestamps. `kb eval` reports hit rate at k=5 and k=10 and mean rank. Rerun it after any chunking, embedding or ranking change, and add questions as the collection grows.
+
+## Deferred
+
+Not blocking anything; picked up when they start to matter.
+
+| Item | Why deferred | Upgrade path |
+| --- | --- | --- |
+| Lease release on worker error | A worker that hits a server error after claiming leaves the episode for the full lease (2 h) | A `POST /v1/work/{guid}/release` the worker calls on non-model failures |
+| Recorded cache keys for pre-split transcripts | The 17 transcripts merged before schema 9 find raw output by newest cache file; harmless | Goes away when a worker reprocesses them |
+| Grow the eval set | The 22 questions come from the first 17 episodes | Add questions from Fantasy Footballers Dynasty and later feeds; rerun `kb eval` after any chunking or ranking change |
+| Host-name discovery | Podchaser matches titles and descriptions, not hosts | Add the iTunes Search API (matches authors) as a second source |
+| MCP search filters | Applied after ranking a pool of 50; a rare feed or speaker can return fewer than k | Push filters into the SQL |
+| MCP store connections | One SQLite connection per tool call | Pool them if latency matters |
+| Commit emails | Three knowledge-base commits carry `hastur@Rickys-Mac-Pro.local`; not worth a rewrite | None |
+| Old data on the M5 | `~/ripperr` (3.2 GB audio, old database, schema-8 backup) is unused | Delete by hand |
+| Dashboard login | The built dashboard asks for the token with a browser prompt | A proper token form, if anyone else uses it |
 
 ## Decisions
 
