@@ -14,7 +14,7 @@ Build the layer that turns ripperr transcripts (and later scraped pages) into a 
 | Backfill | Done: `ripperr add --backfill N`, `POST /v1/feeds {"backfill": N}` |
 | W3. MCP retrieval server | Done: `https://rickys-mac-pro.taile4827e.ts.net:8443/mcp`, own bearer token |
 | W4. Discovery to subscription | Done: `kb discover` CLI and `kb_discover` / `kb_subscribe` MCP tools; first subscription (Fantasy Footballers Dynasty, 5 episodes) made through MCP |
-| W5. Scraper | Next, on the VPS (owner: Ricky) |
+| W5. Scraper | Crawl4AI installed on the VPS; next is the authenticated web-ingest endpoint on the Mac Pro |
 | Dashboard | Done: served by ripperr on the Mac Pro at the API's tailnet address |
 
 ## Context
