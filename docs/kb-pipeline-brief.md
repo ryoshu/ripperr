@@ -13,8 +13,8 @@ Build the layer that turns ripperr transcripts (and later scraped pages) into a 
 | W6. Evaluation set | Done: 22 questions; hit@5 0.91, hit@10 0.95, mean rank 1.7 |
 | Backfill | Done: `ripperr add --backfill N`, `POST /v1/feeds {"backfill": N}` |
 | W3. MCP retrieval server | Done: `https://rickys-mac-pro.taile4827e.ts.net:8443/mcp`, own bearer token |
-| W4. Discovery to subscription | Next |
-| W5. Scraper | After retrieval works on podcasts alone |
+| W4. Discovery to subscription | Done: `kb discover`; first real subscription still to make |
+| W5. Scraper | Next |
 
 ## Context
 
@@ -38,7 +38,7 @@ Each pair of neighbours shares exactly one HTTP contract and no code.
 | --- | --- | --- | --- |
 | `ryoshu/ripperr` | Mac Pro (API, sync, prepare); M5 (dashboard, for now) | Feeds, downloads, audio prep, store, merge, glossary, speaker identity, change feed, dashboard | `docs/api.md` for consumers; `docs/worker-contract.md` for workers |
 | `ryoshu/ripperr-worker` | M5 | ASR and diarization only; no database | `docs/worker-contract.md` (schema 1) |
-| `ryoshu/ripperr-knowledge-base` | Mac Pro | Index, eval set, MCP server; next discovery | Ripperr's change feed and episode API; MCP for agents |
+| `ryoshu/ripperr-knowledge-base` | Mac Pro | Index, eval set, MCP server, discovery | Ripperr's change feed and episode API; MCP for agents |
 
 Code is edited on the laptop and pushed to GitHub. The Mac Pro has no GitHub credentials: ripperr is public and pulled there; the knowledge base is private and pushed to the Mac Pro's checkout directly (`git push macpro main`, which updates its working tree).
 
@@ -121,7 +121,7 @@ Runs on the Mac Pro as `com.ryoshu.ripperr-knowledge-base.indexer`, reading ripp
 
 **Done when.** Claude Code on the laptop can call `kb_search` and `kb_get_span` and get cited results, and a result's timestamp lands on the right passage in the audio. Verified with an MCP client from the laptop over the tailnet; registering it in Claude Code is the last step (command in the knowledge-base README).
 
-### W4. Discovery to subscription
+### W4. Discovery to subscription (done)
 
 **Why.** SearXNG's podcast engines return show and episode pages, but ripperr subscribes to feeds. Something has to resolve a search result to an RSS URL, and a person should approve the subscription, because each feed costs transcription time and disk.
 
@@ -131,7 +131,11 @@ Runs on the Mac Pro as `com.ryoshu.ripperr-knowledge-base.indexer`, reading ripp
 - On confirmation, `POST /v1/feeds` with the URL, title and an optional `backfill`. Ripperr's call is idempotent, so a repeat is harmless.
 - Be polite to hosts: no parallel bulk downloads, and no automated subscribing from search results.
 
-**Done when.** A query for a topic yields feed candidates, confirming one creates a feed in ripperr, and its episodes flow through to the index with no manual steps beyond the confirmation.
+**Built.** `kb discover QUERY [--backfill N]` in the knowledge-base repo. Podchaser results are already feed URLs; Apple Podcasts links resolve through the iTunes lookup API and other pages through their `<link rel="alternate">` feed. Each candidate shows SearXNG's episode count and the feed's newest episode, and feeds ripperr already follows are marked. Subscribing happens only at an interactive prompt. An MCP version is deferred: an agent finding feeds is useful, but subscribing should stay a deliberate step.
+
+**Known limits.** SearXNG's fyyd engine currently crashes ("unexpected crash"), so results come from Podchaser alone. Podchaser matches titles and descriptions, so a host's name finds unrelated shows; topic queries work well.
+
+**Done when.** A query for a topic yields feed candidates, confirming one creates a feed in ripperr, and its episodes flow through to the index with no manual steps beyond the confirmation. Candidates verified; the first real subscription (also the first RSS, rather than YouTube, feed on the Mac Pro) is still to make.
 
 ### W5. Scraper hookup (after W3)
 
