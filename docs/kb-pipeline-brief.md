@@ -12,8 +12,8 @@ Build the layer that turns ripperr transcripts (and later scraped pages) into a 
 | W2. Indexer | Done: running on the Mac Pro under launchd |
 | W6. Evaluation set | Done: 22 questions; hit@5 0.91, hit@10 0.95, mean rank 1.7 |
 | Backfill | Done: `ripperr add --backfill N`, `POST /v1/feeds {"backfill": N}` |
-| W3. MCP retrieval server | Next |
-| W4. Discovery to subscription | After W3 |
+| W3. MCP retrieval server | Done: `https://rickys-mac-pro.taile4827e.ts.net:8443/mcp`, own bearer token |
+| W4. Discovery to subscription | Next |
 | W5. Scraper | After retrieval works on podcasts alone |
 
 ## Context
@@ -38,14 +38,14 @@ Each pair of neighbours shares exactly one HTTP contract and no code.
 | --- | --- | --- | --- |
 | `ryoshu/ripperr` | Mac Pro (API, sync, prepare); M5 (dashboard, for now) | Feeds, downloads, audio prep, store, merge, glossary, speaker identity, change feed, dashboard | `docs/api.md` for consumers; `docs/worker-contract.md` for workers |
 | `ryoshu/ripperr-worker` | M5 | ASR and diarization only; no database | `docs/worker-contract.md` (schema 1) |
-| `ripperr-knowledge-base` (on the Mac Pro; GitHub remote to create) | Mac Pro | Index, eval set; next the MCP server and discovery | Ripperr's change feed and episode API |
+| `ripperr-knowledge-base` (on the Mac Pro; GitHub remote to create) | Mac Pro | Index, eval set, MCP server; next discovery | Ripperr's change feed and episode API; MCP for agents |
 
 ### Machines and services
 
 | Machine | Tailnet name | Runs | Notes |
 | --- | --- | --- | --- |
 | `vps-anodyne` (Ubuntu 22.04, 4 CPU, 6 GB RAM) | 100.84.153.34 | SearXNG at `https://search.ryoshu.com`, tailnet-only via nginx; `mcp-searxng` for Claude Code | Also runs `home-proxy.service`, an SSH SOCKS tunnel on `127.0.0.1:1080` that exits through the Mac Pro's residential IP |
-| `rickys-mac-pro` (Intel, 12 cores, 32 GB, macOS 12.7.6, user `hastur`) | `rickys-mac-pro.taile4827e.ts.net` | Ripperr API (`tailscale serve` 443 → `127.0.0.1:8876`), hourly `sync && prepare`, the indexer. All launchd agents | Always on, sleep disabled. Python 3.11 (uv-managed), static ffmpeg 9 in `~/.local/bin`. No Homebrew or uv. Audio is deleted after merge (`RIPPERR_KEEP_AUDIO=0`) |
+| `rickys-mac-pro` (Intel, 12 cores, 32 GB, macOS 12.7.6, user `hastur`) | `rickys-mac-pro.taile4827e.ts.net` | Ripperr API (`tailscale serve` 443 → `127.0.0.1:8876`), hourly `sync && prepare`, the indexer, the MCP server (8443 → `127.0.0.1:8877`). All launchd agents | Always on, sleep disabled. Python 3.11 (uv-managed), static ffmpeg 9 in `~/.local/bin`. No Homebrew or uv. Audio is deleted after merge (`RIPPERR_KEEP_AUDIO=0`) |
 | M5 Pro laptop (48 GB) | `nyarlathotep.taile4827e.ts.net` | `ripperr-worker` (launchd, installed as a uv tool), the Vite dashboard on `127.0.0.1:5174` proxying to the Mac Pro | Sleeps; a lease left by a sleeping worker expires after 2 h. Serves only srchr on `:8443`; nothing on Funnel |
 
 ### Why these choices
@@ -105,7 +105,7 @@ Runs on the Mac Pro as `com.ryoshu.ripperr-knowledge-base.indexer`, reading ripp
 - **Generic document schema** so the scraper can plug in later: `documents` (`doc_id`, `source_type`, `source_id`, `url`, `title`, `published`, `fetched_at`, `revision`, `meta_json`) and `chunks` (`chunk_id`, `doc_id`, `revision`, `ordinal`, `start_s`, `end_s`, `speaker`, `text`).
 - **Index.** SQLite with FTS5 plus `sqlite-vec` in one file, ranks combined with reciprocal rank fusion. Embeddings: Model2Vec `minishlab/potion-retrieval-32M` (512 dimensions, static, CPU-only). A model or chunker change requires a new index and a bootstrap.
 
-### W3. MCP retrieval server (next)
+### W3. MCP retrieval server (done)
 
 **Why.** MCP is how Claude Code already reaches SearXNG, and the point of the knowledge base is that agents can ask it questions and quote the answer back.
 
@@ -113,10 +113,11 @@ Runs on the Mac Pro as `com.ryoshu.ripperr-knowledge-base.indexer`, reading ripp
 
 - Tools: `kb_search(query, k, filters)` with filters for feed, date range, speaker and source type; `kb_get_span(guid, start, end)` for surrounding transcript; `kb_list_sources()` for what is indexed.
 - Every result carries a citation: show title, feed, published date, speaker display name, start and end seconds, `source_url`, and the episode `guid` and `revision`. For YouTube sources append the start time to the link; for audio feeds, give the timestamp in text.
-- Transport: authenticated streamable HTTP on the Mac Pro, exposed on the tailnet with `tailscale serve` on its own port, for Claude Code on the laptop. Cap response size.
+- Transport: streamable HTTP (stateless, JSON responses) on `127.0.0.1:8877`, exposed with `tailscale serve` on 8443, with its own bearer token separate from ripperr's. DNS-rebinding protection allows only localhost and the tailnet name. Responses carry at most 24,000 characters of quotes.
+- Built with the official `mcp` SDK 2.x (`MCPServer`). `cryptography` is held below 49, the last line with Intel macOS wheels.
 - Transcript text is untrusted input. Return it clearly marked as quoted source material so a podcast host saying "ignore previous instructions" is not treated as an instruction.
 
-**Done when.** Claude Code on the laptop can call `kb_search` and `kb_get_span` and get cited results, and a result's timestamp lands on the right passage in the audio.
+**Done when.** Claude Code on the laptop can call `kb_search` and `kb_get_span` and get cited results, and a result's timestamp lands on the right passage in the audio. Verified with an MCP client from the laptop over the tailnet; registering it in Claude Code is the last step (command in the knowledge-base README).
 
 ### W4. Discovery to subscription
 
@@ -155,7 +156,7 @@ Runs on the Mac Pro as `com.ryoshu.ripperr-knowledge-base.indexer`, reading ripp
 | Indexer host | Mac Pro, next to ripperr | Same machine as its only data source; the VPS is tight on RAM |
 | Vector store | `sqlite-vec` in the indexer's SQLite file | One file, no extra service |
 | Embedding model | Model2Vec `potion-retrieval-32M` | Static CPU model that runs on Intel macOS 12, where torch and onnxruntime wheels are unreliable; content stays local |
-| MCP transport | Streamable HTTP on the tailnet | The index is on the Mac Pro and the first client is Claude Code on the laptop |
+| MCP transport | Streamable HTTP on the tailnet, own token | The index is on the Mac Pro and the first client is Claude Code on the laptop; a separate token keeps MCP clients away from ripperr writes |
 | Backfill | Built into ripperr, bounded to 100 | Without it a discovered feed contributes only its newest episode |
 | Audio retention | Deleted after merge on the Mac Pro | Transcripts and `remerge` need only the database and raw model output |
 
