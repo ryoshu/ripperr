@@ -10,11 +10,11 @@ Build the layer that turns ripperr transcripts (and later scraped pages) into a 
 | --- | --- |
 | W1. Split compute from ripperr; run ripperr on the Mac Pro | Done |
 | W2. Indexer | Done: running on the Mac Pro under launchd |
-| W6. Evaluation set | Done: 29 questions over 24 episodes; hit@5 0.83, hit@10 0.86, mean rank 1.5 (was 0.91 / 0.95 on 22 questions and 17 episodes) |
+| W6. Evaluation set | Done: 29 questions over 24 episodes; hit@5 0.83, hit@10 0.86, mean rank 1.44 after chunker v2 (was 0.91 / 0.95 on 22 questions and 17 episodes) |
 | Backfill | Done: `ripperr add --backfill N`, `POST /v1/feeds {"backfill": N}` |
 | W3. MCP retrieval server | Done: `https://rickys-mac-pro.taile4827e.ts.net:8443/mcp`, own bearer token |
 | W4. Discovery to subscription | Done: `kb discover` CLI and `kb_discover` / `kb_subscribe` MCP tools; first subscription (Fantasy Footballers Dynasty, 5 episodes) made through MCP |
-| W5. Scraper | Crawl4AI installed on the VPS; next is the authenticated web-ingest endpoint on the Mac Pro |
+| W5. Scraper | Half done: the Mac Pro ingest endpoint is live (`https://rickys-mac-pro.taile4827e.ts.net:8444/v1/pages`, own bearer token). Crawl4AI is installed on the VPS, but the crawl-and-post script is not written |
 | Dashboard | Done: served by ripperr on the Mac Pro at the API's tailnet address |
 
 ## Context
@@ -138,7 +138,7 @@ Runs on the Mac Pro as `com.ryoshu.ripperr-knowledge-base.indexer`, reading ripp
 
 **Done when.** A query for a topic yields feed candidates, confirming one creates a feed in ripperr, and its episodes flow through to the index with no manual steps beyond the confirmation. Verified: Fantasy Footballers Dynasty was subscribed through `kb_subscribe` with `backfill: 5`; its episodes downloaded on the Mac Pro (the first RSS rather than YouTube feed there) and went to the worker.
 
-### W5. Scraper hookup (after W3)
+### W5. Scraper hookup (half done)
 
 **Why.** The knowledge base should also hold web pages, and SearXNG returns only links and snippets. The earlier fetch tests showed a plain HTTP client is not enough for some sites.
 
@@ -148,6 +148,8 @@ Runs on the Mac Pro as `com.ryoshu.ripperr-knowledge-base.indexer`, reading ripp
 
 - Crawl4AI on the VPS in its own virtualenv with Chromium, one page at a time (6 GB RAM). Optionally route through `socks5://127.0.0.1:1080` (the home tunnel) for sites that need a residential address.
 - Send cleaned markdown over the tailnet to a small authenticated ingestion endpoint on the Mac Pro, where the indexer owns the SQLite writes. Do not access its SQLite file remotely. Deduplicate on canonical URL plus a content hash, write `source_type = web` into the same `documents` and `chunks` schema, and record `fetched_at` so staleness is visible.
+- **Built:** `kb serve-ingest` on the Mac Pro (`POST /v1/pages` with `url`, `markdown`, optional `title` and `published`; 2 MB cap; separate `ingest-token`; exposed with `tailscale serve --https=8444`). It canonicalises the URL, returns `unchanged` for the same content hash, replaces the page's chunks when content changes, and indexes `source_type = web` with the host as the feed. It never fetches. Verified end to end over the tailnet.
+- **Not built:** the crawl-and-post script on the VPS (Crawl4AI is installed there). Rebuilding the index from ripperr drops web pages, so they must be re-posted.
 - Out of scope here: crawling at scale. The user does not run swarms.
 
 ### W6. Evaluation set (done)
@@ -163,8 +165,7 @@ Not blocking anything; picked up when they start to matter.
 | Lease release on worker error | A worker that hits a server error after claiming leaves the episode for the full lease (2 h) | A `POST /v1/work/{guid}/release` the worker calls on non-model failures |
 | Recorded cache keys for pre-split transcripts | The 17 transcripts merged before schema 9 find raw output by newest cache file; harmless | Goes away when a worker reprocesses them |
 | Grow the eval set | 29 questions, 7 from Fantasy Footballers Dynasty | Keep adding as feeds arrive; rerun `kb eval` after any chunking or ranking change |
-| Tiny chunks on fast-talking shows | The chunker splits at every speaker change, so rapid back-and-forth (Fantasy Footballers) yields chunks like "Welcome in!"; two of the new eval misses look like this | Merge short adjacent turns into one window (labelled with each speaker) up to the word budget; needs a new chunker version and a rebuild |
-| Ads in the index | Host-read and inserted ads (T-Mobile, Mucinex) are indexed like content | Drop chunks matching ad patterns, or let ripperr mark ad segments |
+| Ads in the index | Host-read and inserted ads (T-Mobile, Mucinex) are indexed like content. Pattern lists were rejected as too flaky | Have ripperr mark ad segments, then skip or flag them at index time. A flag-and-hide-by-default `is_ad` column was prototyped and reverted (`a4bd028`) |
 | Host-name discovery | Podchaser matches titles and descriptions, not hosts | Add the iTunes Search API (matches authors) as a second source |
 | MCP search filters | Applied after ranking a pool of 50; a rare feed or speaker can return fewer than k | Push filters into the SQL |
 | MCP store connections | One SQLite connection per tool call | Pool them if latency matters |
