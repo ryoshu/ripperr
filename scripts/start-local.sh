@@ -78,7 +78,11 @@ wait_for_ready() {
     if ! kill -0 "$pid" 2>/dev/null; then
       break
     fi
-    if curl -fsS --max-time 1 "$url" >/dev/null; then
+    local -a curl_args=(-fsS --max-time 1)
+    if [[ "$label" == "API" && -n "${RIPPERR_API_TOKEN:-}" ]]; then
+      curl_args+=(-H "Authorization: Bearer $RIPPERR_API_TOKEN")
+    fi
+    if curl "${curl_args[@]}" "$url" >/dev/null; then
       return 0
     fi
     sleep 0.2

@@ -68,10 +68,10 @@ Source: `docs/api.md`, the README, and a read of the route list in `ripperr/serv
 
 **What.**
 
-- Set `RIPPERR_API_TOKEN` in ripperr's `.env` (`start-local.sh` already passes it to the dashboard). Generate a long random value; store it with file mode 600 on each consumer; never commit it.
+- Set `RIPPERR_API_TOKEN` in ripperr's `.env` (`start-local.sh` already passes it to the dashboard). Generate a long random value; store it with file mode 600 on each consumer; never commit it. Before enabling the token, update `start-local.sh`'s `/healthz` readiness probe to send the bearer header: the server authenticates health checks too, so the current unauthenticated probe reports a healthy API as a startup failure.
 - Put `tailscale serve` in front of `127.0.0.1:8876` (check `tailscale serve --help` for the flag syntax of the installed version). MagicDNS and HTTPS certificates must be enabled in the Tailscale admin console.
 - Do not bind ripperr to `0.0.0.0`, do not use Tailscale Funnel, and leave the Vite dashboard (`5174`) on loopback.
-- Schedule `ripperr sync` and `ripperr run` with `launchd` on the M5, and keep the machine awake while processing (`caffeinate`). One `process` at a time.
+- Run the API as an API-only `launchd` service on the M5 rather than relying on the development script, which also starts Vite. Schedule `ripperr sync` and `ripperr run` with `launchd`, and keep the machine awake while processing (`caffeinate`). One `process` at a time.
 - If the tailnet uses ACLs, allow only the indexer host to reach the M5 on 443.
 
 **Done when.** From the indexer host, `curl -H "Authorization: Bearer $TOKEN" https://<m5-name>.<tailnet>.ts.net/healthz` returns `ok` and a sequence number, and the same request without the token is rejected.
@@ -86,8 +86,8 @@ Source: `docs/api.md`, the README, and a read of the route list in `ripperr/serv
 
 - **Sync loop.** Poll `GET /v1/changes?after=<cursor>&limit=100`. Persist the cursor in the indexer's own SQLite database, in the same transaction as the writes it covers, so a crash never advances past unprocessed events. Back off and retry when the M5 is unreachable.
 - **Per event.** For a transcript event, `GET /v1/episodes/{guid}` with `If-None-Match`; if the revision is newer than the stored one, delete that episode's chunks and insert the new set in one transaction. For a metadata event, always re-read and update metadata and speaker names. For a deleted event, remove everything for that guid.
-- **Reset.** On `410` with `reset: true`, call bootstrap, replay from the returned `after`, and drop any local episode whose guid was not re-emitted (`GET /v1/episodes` lists the full set).
-- **Chunking.** Group consecutive turns into windows of roughly 200 to 400 tokens, breaking on speaker change, with a little overlap. Keep `start` and `end` seconds, the speaker label, and the text. Chunk identity is a hash of guid, revision and start time, since `idx` is not stable.
+- **Reset.** On `410` with `reset: true`, call bootstrap and record both `after` and `next_cursor`. Replay every event from `after` through `next_cursor`, paging until that cutoff is reached; collect the guids of completed episodes re-emitted in that range. Only after the full range is committed, remove local podcast episodes absent from that set, then continue polling after `next_cursor`. Do not use an incomplete page as the authoritative set. `GET /v1/episodes` can help reconcile the full episode list, but includes episodes without completed transcripts.
+- **Chunking.** Group consecutive turns into windows of roughly 200 to 400 tokens, breaking on speaker change, with a little overlap. Keep `start` and `end` seconds, the speaker label, and the text. Chunk identity is a hash of guid, revision and chunk ordinal, since turn `idx` is not stable and split or overlapping chunks can share a start time.
 - **Speaker names.** Store the raw label on each chunk and join the episode's `speaker_names` at query time, because names can change without a revision bump.
 - **Generic document schema** so the scraper can plug in later: a `documents` table (`doc_id`, `source_type` such as `podcast` or `web`, `source_id` such as the guid, `url`, `title`, `published`, `fetched_at`, `revision`, `meta_json`) and a `chunks` table (`chunk_id`, `doc_id`, `revision`, `ordinal`, `start_s`, `end_s`, `speaker`, `text`).
 - **Index.** SQLite with FTS5 for keywords plus `sqlite-vec` for vectors, in one file. Record the embedding model name and dimension in index metadata so a model change forces a rebuild. Combine keyword and vector ranks with reciprocal rank fusion. On macOS, make sure the Python build allows loadable SQLite extensions (use a Homebrew or `uv`-managed Python, not the system one).
@@ -103,7 +103,7 @@ Source: `docs/api.md`, the README, and a read of the route list in `ripperr/serv
 
 - Tools: `kb_search(query, k, filters)` with filters for feed, date range, speaker and source type; `kb_get_span(guid, start, end)` for surrounding transcript; `kb_list_sources()` for what is indexed.
 - Every result carries a citation: show title, feed, published date, speaker display name, start and end seconds, `source_url`, and the episode `guid` and `revision`. For YouTube sources append the start time to the link; for audio feeds, give the timestamp in text.
-- Transport: stdio for a local Claude Code on the same machine as the index; otherwise streamable HTTP on the tailnet behind nginx or `tailscale serve`, matching how SearXNG is exposed. Cap response size.
+- Transport: because the index runs on the Mac Pro and Claude Code must query it from the laptop, expose authenticated streamable HTTP on the tailnet behind nginx or `tailscale serve` for the first usable version. Stdio is an optional local interface on the indexer host, or can be reached from the laptop through an explicit SSH launcher. Cap response size.
 - Transcript text is untrusted input. Return it clearly marked as quoted source material so a podcast host saying "ignore previous instructions" is not treated as an instruction.
 
 **Done when.** Claude Code on the laptop can call `kb_search` and `kb_get_span` and get cited results, and a result's timestamp lands on the right passage in the audio.
@@ -130,7 +130,7 @@ Source: `docs/api.md`, the README, and a read of the route list in `ripperr/serv
 **What.**
 
 - Crawl4AI on the VPS in its own virtualenv with Chromium, one page at a time (6 GB RAM). Optionally route through `socks5://127.0.0.1:1080` (the home tunnel) for sites that need a residential address.
-- Output cleaned markdown into the same `documents` and `chunks` schema with `source_type = web`. Deduplicate on canonical URL plus a content hash, and record `fetched_at` so staleness is visible.
+- Send cleaned markdown over the tailnet to a small authenticated ingestion endpoint on the Mac Pro, where the indexer owns the SQLite writes. Do not access its SQLite file remotely. Deduplicate on canonical URL plus a content hash, write `source_type = web` into the same `documents` and `chunks` schema, and record `fetched_at` so staleness is visible.
 - Out of scope here: crawling at scale. The user does not run swarms.
 
 ### W6. Evaluation set
@@ -148,7 +148,7 @@ Build W1, then W2 and W6 together, then W3, then W4, and leave W5 until retrieva
 | Indexer host | Mac Pro | Always on and idle; the VPS is tight on RAM. Confirm the Mac Pro's RAM and that a Python 3.11+ with loadable SQLite extensions installs on macOS 12 |
 | Vector store | `sqlite-vec` in the indexer's SQLite file | One file, same tooling as ripperr, no extra service. LanceDB is the fallback if extension loading is a problem |
 | Embedding model | A small local model that runs on CPU | Transcripts are text and volumes are modest; avoids sending content to a third party |
-| MCP transport | stdio first, HTTP on the tailnet when a second client needs it | Simplest start; matches the SearXNG pattern later |
+| MCP transport | Streamable HTTP on the tailnet first | The index is on the Mac Pro and the initial Claude Code client is on the laptop; stdio can be added locally or through an SSH launcher |
 | Backfill of older episodes | Decide before W4 | Needs a change in the ripperr repo; without it a new feed contributes only its newest episode |
 | Where the MCP and indexer code live | A new repo, separate from ripperr | Keeps the HTTP contract as the only coupling |
 
