@@ -64,6 +64,7 @@ Settings come from the environment:
 | `RIPPERR_DEEPINFRA_MODEL` | DeepInfra model (default `deepseek-ai/DeepSeek-V4-Flash-0731`) |
 | `RIPPERR_DEEPINFRA_BASE_URL` | DeepInfra OpenAI-compatible base URL |
 | `RIPPERR_LEASE_SECONDS` | how long a remote worker holds a claimed episode (default 7200) |
+| `RIPPERR_DASHBOARD_DIR` | built dashboard to serve alongside the API (unset: API only) |
 | `RIPPERR_EMBEDDING_SPACE` | speaker-vector space accepted from workers (default `senko-campplus`) |
 
 Run the tests with `uv pip install pytest && python -m pytest tests`.
@@ -136,7 +137,6 @@ including errors, ordering and consistency, is in [docs/api.md](docs/api.md).
 | `server.py` | HTTP API, change feed, worker endpoints |
 | `store.py` | SQLite schema, FTS5 search |
 
-See the [editable architecture diagram](docs/architecture.drawio).
 
 ## Dashboard
 
@@ -156,8 +156,15 @@ This starts the API on `http://127.0.0.1:8876` and the Vite dashboard on
 `http://127.0.0.1:5174`; logs and PID files live under `.local/`.
 For manual startup, the API and frontend commands above remain valid. Open the
 Vite URL shown in the terminal.
-The dev server proxies `/healthz` and `/v1` to the local Ripperr server. Set
-`RIPPERR_API_SERVER` when the API is on a non-default local port.
+The dev server proxies `/healthz` and `/v1` to the Ripperr server; set
+`RIPPERR_API_SERVER` to point it elsewhere, including another host.
+
+To serve the dashboard from `ripperr serve` itself, build it
+(`npm run build --prefix frontend`) and set `RIPPERR_DASHBOARD_DIR` to
+`frontend/dist`. The server then answers any non-API path with the built files,
+which hold no secrets and need no token; the API still does. A built dashboard
+asks for the API token once and keeps it in that browser's local storage. Build
+without `VITE_RIPPERR_TOKEN` set, so no token is compiled into the bundle.
 
 ## The merge stage
 

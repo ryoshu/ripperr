@@ -472,3 +472,28 @@ def test_episode_speaker_names_can_be_managed_with_token(tmp_path):
 def test_serve_rejects_plaintext_remote_bind(tmp_path):
     with pytest.raises(ValueError, match="TLS reverse proxy or tunnel"):
         serve(Config(root=tmp_path), host="0.0.0.0", token="secret")
+
+
+def test_dashboard_files_are_served_without_the_token_but_the_api_is_not(tmp_path, monkeypatch):
+    dist = tmp_path / "dist"
+    (dist / "assets").mkdir(parents=True)
+    (dist / "index.html").write_text("<html>dashboard</html>")
+    (dist / "assets" / "app.js").write_text("console.log(1)")
+    (tmp_path / "secret.txt").write_text("nope")
+    monkeypatch.setenv("RIPPERR_DASHBOARD_DIR", str(dist))
+    db = tmp_path / "ripperr.db"
+    Store(db).close()
+    server, thread = _server(db, "secret")
+    base = f"http://127.0.0.1:{server.server_port}"
+    try:
+        with urlopen(base + "/assets/app.js") as r:
+            assert r.read() == b"console.log(1)" and "javascript" in r.headers["Content-Type"]
+        with urlopen(base + "/episodes/abc") as r:  # client-side route
+            assert r.read() == b"<html>dashboard</html>"
+        for path in ("/%2e%2e/secret.txt", "/v1/feeds"):  # traversal is refused like any API call
+            with pytest.raises(HTTPError) as error:
+                urlopen(base + path)
+            assert error.value.code == 401
+    finally:
+        server.shutdown()
+        thread.join()

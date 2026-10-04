@@ -54,6 +54,12 @@ class Config:
 
     keep_audio: bool = field(default_factory=lambda: os.environ.get("RIPPERR_KEEP_AUDIO", "1") != "0")
 
+    # A built dashboard (`npm run build` in frontend/) to serve next to the API.
+    # The files hold no secrets; the API still needs the token.
+    dashboard_dir: Path | None = field(default_factory=lambda: (
+        Path(os.environ["RIPPERR_DASHBOARD_DIR"]).expanduser() if os.environ.get("RIPPERR_DASHBOARD_DIR") else None
+    ))
+
     # Remote workers (docs/worker-contract.md). A claimed episode returns to the
     # queue once its lease expires. Speaker vectors from any other embedding
     # space are dropped: vectors from different models are not comparable.

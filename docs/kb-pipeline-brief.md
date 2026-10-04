@@ -36,7 +36,7 @@ Each pair of neighbours shares exactly one HTTP contract and no code.
 
 | Repo | Runs on | Owns | Contract with its neighbours |
 | --- | --- | --- | --- |
-| `ryoshu/ripperr` | Mac Pro (API, sync, prepare); M5 (dashboard, for now) | Feeds, downloads, audio prep, store, merge, glossary, speaker identity, change feed, dashboard | `docs/api.md` for consumers; `docs/worker-contract.md` for workers |
+| `ryoshu/ripperr` | Mac Pro (API, dashboard, sync, prepare) | Feeds, downloads, audio prep, store, merge, glossary, speaker identity, change feed, dashboard | `docs/api.md` for consumers; `docs/worker-contract.md` for workers |
 | `ryoshu/ripperr-worker` | M5 | ASR and diarization only; no database | `docs/worker-contract.md` (schema 1) |
 | `ryoshu/ripperr-knowledge-base` | Mac Pro | Index, eval set, MCP server, discovery | Ripperr's change feed and episode API; MCP for agents |
 
@@ -47,8 +47,8 @@ Code is edited on the laptop and pushed to GitHub. The Mac Pro has no GitHub cre
 | Machine | Tailnet name | Runs | Notes |
 | --- | --- | --- | --- |
 | `vps-anodyne` (Ubuntu 22.04, 4 CPU, 6 GB RAM) | 100.84.153.34 | SearXNG at `https://search.ryoshu.com`, tailnet-only via nginx; `mcp-searxng` for Claude Code | Also runs `home-proxy.service`, an SSH SOCKS tunnel on `127.0.0.1:1080` that exits through the Mac Pro's residential IP |
-| `rickys-mac-pro` (Intel, 12 cores, 32 GB, macOS 12.7.6, user `hastur`) | `rickys-mac-pro.taile4827e.ts.net` | Ripperr API (`tailscale serve` 443 → `127.0.0.1:8876`), hourly `sync && prepare`, the indexer, the MCP server (8443 → `127.0.0.1:8877`). All launchd agents | Always on, sleep disabled. Python 3.11 (uv-managed), static ffmpeg 9 in `~/.local/bin`. No Homebrew or uv. Audio is deleted after merge (`RIPPERR_KEEP_AUDIO=0`) |
-| M5 Pro laptop (48 GB) | `nyarlathotep.taile4827e.ts.net` | `ripperr-worker` (launchd, installed as a uv tool), the Vite dashboard on `127.0.0.1:5174` proxying to the Mac Pro | Sleeps; a lease left by a sleeping worker expires after 2 h. Serves only srchr on `:8443`; nothing on Funnel |
+| `rickys-mac-pro` (Intel, 12 cores, 32 GB, macOS 12.7.6, user `hastur`) | `rickys-mac-pro.taile4827e.ts.net` | Ripperr API and dashboard (`tailscale serve` 443 → `127.0.0.1:8876`), hourly `sync && prepare`, the indexer, the MCP server (8443 → `127.0.0.1:8877`). All launchd agents | Always on, sleep disabled. Python 3.11 (uv-managed), static ffmpeg 9 in `~/.local/bin`. No Homebrew or uv. Audio is deleted after merge (`RIPPERR_KEEP_AUDIO=0`) |
+| M5 Pro laptop (48 GB) | `nyarlathotep.taile4827e.ts.net` | `ripperr-worker` (launchd, installed as a uv tool) | Sleeps; a lease left by a sleeping worker expires after 2 h. Serves only srchr on `:8443`; nothing on Funnel |
 
 ### Why these choices
 
@@ -93,7 +93,7 @@ Ripperr runs everything except model inference; `ripperr-worker` runs ASR and di
 
 Verified end to end: an episode prepared on the Mac Pro was transcribed by the M5 worker, merged on the Mac Pro, and indexed. A worker re-run of an existing episode produced the same cache keys and, fed the original model output, the same words and diarization.
 
-Ripperr no longer contains any model code: `ripperr run`, the in-process processor, `asr.py`, `diarize.py` and the `apple` and `linux` extras are gone, and `remerge` reads only cached worker output. Later, if wanted, serve the built dashboard from the Mac Pro instead of the laptop's Vite dev server.
+Ripperr no longer contains any model code: `ripperr run`, the in-process processor, `asr.py`, `diarize.py` and the `apple` and `linux` extras are gone, and `remerge` reads only cached worker output. The built dashboard is served by ripperr on the Mac Pro (`RIPPERR_DASHBOARD_DIR`), at the API's tailnet address; it asks for the token once per browser.
 
 ### W2. Indexer service (done)
 

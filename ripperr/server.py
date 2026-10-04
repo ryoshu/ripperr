@@ -6,6 +6,7 @@ import hashlib
 import hmac
 import ipaddress
 import json
+import mimetypes
 import shutil
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -60,6 +61,8 @@ def make_handler(cfg: Config, token: str | None = None):
 
         def _dispatch(self, method: str, *, write: bool = False) -> None:
             parsed = urlparse(self.path)
+            if method == "GET" and self._dashboard_file(parsed.path):
+                return
             write = write or parsed.path.startswith(_WORK_PREFIX)  # workers always need the token
             speaker_write = write and _is_speaker_path(parsed.path)
             if not self._authorized(write=write and not speaker_write):
@@ -89,6 +92,26 @@ def make_handler(cfg: Config, token: str | None = None):
                 _json(self, {"error": str(exc)}, HTTPStatus.BAD_REQUEST)
             except Exception:  # noqa: BLE001 - never leak a traceback or host path over HTTP
                 _json(self, {"error": "internal server error"}, HTTPStatus.INTERNAL_SERVER_ERROR)
+
+        def _dashboard_file(self, path: str) -> bool:
+            """Serve a file of the built dashboard, or index.html for its client
+            routes. API paths and a server without a dashboard return False."""
+            root = cfg.dashboard_dir
+            if root is None or path == "/healthz" or path.startswith("/v1/"):
+                return False
+            root = root.resolve()
+            target = (root / unquote(path).lstrip("/")).resolve()
+            if not target.is_relative_to(root):
+                return False  # falls through to the API's 404
+            if not target.is_file():
+                target = root / "index.html"
+            body = target.read_bytes()
+            self.send_response(HTTPStatus.OK)
+            self.send_header("Content-Type", mimetypes.guess_type(target.name)[0] or "application/octet-stream")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return True
 
         def _authorized(self, *, write: bool = False) -> bool:
             if write and not token:

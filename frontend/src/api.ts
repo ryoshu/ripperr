@@ -73,13 +73,46 @@ type EpisodePage = {
   has_more: boolean
 }
 
-const token = import.meta.env.VITE_RIPPERR_TOKEN ?? ""
+// The local dev server injects the token at build time. A built dashboard
+// served by ripperr carries no secret: it asks once and keeps the token in
+// this browser.
+const TOKEN_KEY = "ripperr-token"
+
+function storedToken(): string {
+  try {
+    return localStorage.getItem(TOKEN_KEY) ?? ""
+  } catch {
+    return ""
+  }
+}
+
+function rememberToken(value: string) {
+  try {
+    if (value) localStorage.setItem(TOKEN_KEY, value)
+    else localStorage.removeItem(TOKEN_KEY)
+  } catch {
+    // Private windows may refuse storage; the token then lasts for this page only.
+  }
+}
+
+let token = import.meta.env.VITE_RIPPERR_TOKEN || storedToken()
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
-  const headers = new Headers(init?.headers)
-  if (token) headers.set("Authorization", `Bearer ${token}`)
-  if (init?.body && !headers.has("Content-Type")) headers.set("Content-Type", "application/json")
-  const response = await fetch(path, { ...init, headers })
+  const send = () => {
+    const headers = new Headers(init?.headers)
+    if (token) headers.set("Authorization", `Bearer ${token}`)
+    if (init?.body && !headers.has("Content-Type")) headers.set("Content-Type", "application/json")
+    return fetch(path, { ...init, headers })
+  }
+  let response = await send()
+  if (response.status === 401) {
+    const entered = window.prompt("Ripperr API token")?.trim() ?? ""
+    if (entered) {
+      token = entered
+      response = await send()
+      rememberToken(response.status === 401 ? "" : entered)
+    }
+  }
   if (!response.ok) {
     let message = `${response.status} ${response.statusText}`
     try {
