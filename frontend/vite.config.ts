@@ -11,8 +11,9 @@ export default defineConfig({
   server: {
     allowedHosts: ["nyarlathotep.taile4827e.ts.net"],
     proxy: {
-      "/healthz": apiServer,
-      "/v1": apiServer,
+      // changeOrigin: a remote API behind `tailscale serve` routes on its own hostname.
+      "/healthz": { target: apiServer, changeOrigin: true },
+      "/v1": { target: apiServer, changeOrigin: true },
     },
   },
 })

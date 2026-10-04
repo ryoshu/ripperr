@@ -11,5 +11,6 @@ if [[ -f .env ]]; then
   set +a
 fi
 
+# Control plane only: models run in ripperr-worker, which claims what this prepares.
 .venv/bin/python -m ripperr.cli sync
-exec caffeinate -i .venv/bin/python -m ripperr.cli run
+exec .venv/bin/python -m ripperr.cli prepare

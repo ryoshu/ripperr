@@ -11,7 +11,7 @@ if [[ -f .env ]]; then
   set +a
 fi
 
-export RIPPERR_API_SERVER="http://127.0.0.1:${RIPPERR_API_PORT:-8876}"
+export RIPPERR_API_SERVER="${RIPPERR_API_SERVER:-http://127.0.0.1:${RIPPERR_API_PORT:-8876}}"
 export VITE_RIPPERR_TOKEN="${RIPPERR_API_TOKEN:-}"
 cd frontend
 exec node node_modules/vite/bin/vite.js \
