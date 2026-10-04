@@ -49,7 +49,7 @@ from .pipeline import (
     remerge,
     sync_feeds,
 )
-from .store import STATUS_DOWNLOADED, STATUS_ERROR, Store
+from .store import STATUS_ERROR, Store
 
 
 _CACHE_FILE = re.compile(r"^(?P<episode_key>[0-9a-f]{12})\.(?:asr|diar|embed)-[0-9a-f]{12}\.json$")
@@ -201,8 +201,6 @@ class Ripperr:
                 self.log(f"  ! failed: {exc}")
                 self.store.set_status(ep.id, STATUS_ERROR, error=traceback.format_exc(limit=3))
                 continue
-            if ep.status == STATUS_ERROR:  # a retried failure goes back in the queue
-                self.store.set_status(ep.id, STATUS_DOWNLOADED)
             ready.append(self.store.episode(ep.guid))
         return ready
 

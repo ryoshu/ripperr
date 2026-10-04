@@ -62,6 +62,29 @@ def test_claim_leases_newest_once_and_expired_leases_move_on(tmp_path):
     assert rip2.store.lease_holder(guid, fresh).guid == guid
 
 
+def test_episode_is_claimable_only_once_its_wav_exists(tmp_path, monkeypatch):
+    rip = Ripperr(Config(root=tmp_path), log=lambda _: None)
+    fid = rip.add_feed("http://feed").id
+    rip.store.add_episode(fid, "ep", "Ep", None, "http://a/ep")
+    claims_during_conversion = []
+
+    def download(url, dest, title):
+        dest.mkdir(parents=True, exist_ok=True)
+        (dest / "ep.mp3").write_bytes(b"mp3")
+        return dest / "ep.mp3"
+
+    def to_wav16k(src, dest):
+        claims_during_conversion.append(rip.claim_work("eager"))
+        return dest / "ep.16k.wav"
+
+    monkeypatch.setattr("ripperr.pipeline.feeds.download", download)
+    monkeypatch.setattr("ripperr.pipeline.audio.duration_seconds", lambda src: 1.0)
+    monkeypatch.setattr("ripperr.pipeline.audio.to_wav16k", to_wav16k)
+    assert len(rip.prepare()) == 1
+    assert claims_during_conversion == [None]
+    assert rip.claim_work("m5") is not None
+
+
 def test_submit_merges_once_records_model_keys_and_remerges_without_models(tmp_path):
     rip = Ripperr(Config(root=tmp_path, keep_audio=True), log=lambda _: None)
     guid = _downloaded(rip, tmp_path, "ep", "2026-01-01T00:00:00+00:00")

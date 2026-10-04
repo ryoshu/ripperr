@@ -19,7 +19,7 @@ from typing import Any, Callable, Mapping, Sequence
 from . import asr, audio, diarize, feeds, glossary, merge
 from .config import Config, stage_key
 from .models import Correction, Episode, Turn
-from .store import STATUS_DOWNLOADED, STATUS_ERROR, Store
+from .store import STATUS_DOWNLOADED, STATUS_ERROR, STATUS_NEW, Store
 
 Log = Callable[[str], None]
 
@@ -262,18 +262,24 @@ class Processor:
 
 
 def prepare_audio(store: Store, cfg: Config, episode: Episode, log: Log = print) -> Path:
-    """Download the episode if needed and return its 16 kHz mono WAV."""
+    """Download the episode if needed and return its 16 kHz mono WAV.
+
+    The episode becomes `downloaded`, and so claimable by a worker, only once
+    the WAV exists: a worker must never fetch audio still being converted."""
     src = Path(episode.audio_path) if episode.audio_path else None
     if src is None or not src.exists():
         log("  downloading…")
         src = feeds.download(episode.audio_url, cfg.audio_dir, episode.title)
         store.set_status(
             episode.id,
-            STATUS_DOWNLOADED,
+            episode.status,
             audio_path=str(src),
             duration=audio.duration_seconds(src),
         )
-    return audio.to_wav16k(src, cfg.audio_dir)
+    wav = audio.to_wav16k(src, cfg.audio_dir)
+    if episode.status in (STATUS_NEW, STATUS_ERROR):  # a retried failure goes back in the queue too
+        store.set_status(episode.id, STATUS_DOWNLOADED)
+    return wav
 
 
 def delete_audio(store: Store, episode: Episode, wav: Path) -> None:
