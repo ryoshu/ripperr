@@ -38,7 +38,9 @@ Each pair of neighbours shares exactly one HTTP contract and no code.
 | --- | --- | --- | --- |
 | `ryoshu/ripperr` | Mac Pro (API, sync, prepare); M5 (dashboard, for now) | Feeds, downloads, audio prep, store, merge, glossary, speaker identity, change feed, dashboard | `docs/api.md` for consumers; `docs/worker-contract.md` for workers |
 | `ryoshu/ripperr-worker` | M5 | ASR and diarization only; no database | `docs/worker-contract.md` (schema 1) |
-| `ripperr-knowledge-base` (on the Mac Pro; GitHub remote to create) | Mac Pro | Index, eval set, MCP server; next discovery | Ripperr's change feed and episode API; MCP for agents |
+| `ryoshu/ripperr-knowledge-base` | Mac Pro | Index, eval set, MCP server; next discovery | Ripperr's change feed and episode API; MCP for agents |
+
+Code is edited on the laptop and pushed to GitHub. The Mac Pro has no GitHub credentials: ripperr is public and pulled there; the knowledge base is private and pushed to the Mac Pro's checkout directly (`git push macpro main`, which updates its working tree).
 
 ### Machines and services
 
