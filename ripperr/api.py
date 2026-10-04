@@ -17,8 +17,10 @@ tell when it needs to re-read one.
 from __future__ import annotations
 
 import re
+import traceback
 from pathlib import Path
 
+from .audio import wav16k_path
 from .config import Config, default_config
 from .deepinfra import DeepInfraError, guest_hints as deepinfra_guest_hints
 from .glossary import load as load_glossary
@@ -35,8 +37,19 @@ from .models import (
     Transcript,
 )
 from .identity import guest_hints as extract_guest_hints
-from .pipeline import Log, Processor, backfill_feed, remerge, sync_feeds
-from .store import Store
+from .pipeline import (
+    Log,
+    Processor,
+    apply_work_result,
+    backfill_feed,
+    delete_audio,
+    parse_work_result,
+    prepare_audio,
+    raw_output_path,
+    remerge,
+    sync_feeds,
+)
+from .store import STATUS_DOWNLOADED, STATUS_ERROR, Store
 
 
 _CACHE_FILE = re.compile(r"^(?P<episode_key>[0-9a-f]{12})\.(?:asr|diar|embed)-[0-9a-f]{12}\.json$")
@@ -44,6 +57,11 @@ _CACHE_FILE = re.compile(r"^(?P<episode_key>[0-9a-f]{12})\.(?:asr|diar|embed)-[0
 
 class ProcessingBusyError(RuntimeError):
     """A destructive operation was attempted during model processing."""
+
+
+class LeaseError(RuntimeError):
+    """A worker's lease is not the episode's current one: it was re-claimed
+    after expiring, or its result was already applied."""
 
 
 class ChangeLogPrunedError(RuntimeError):
@@ -107,9 +125,13 @@ class Ripperr:
             episodes = self.store.episodes()
             active_keys = {self.cfg.episode_key(episode.guid) for episode in episodes}
             current_paths = {
-                self.cfg.raw_path(episode.guid, kind).resolve()
+                path.resolve()
                 for episode in episodes
                 for kind in ("asr", "diar", "embed")
+                for path in (
+                    self.cfg.raw_path(episode.guid, kind),
+                    raw_output_path(self.store, self.cfg, episode, kind),
+                )
             }
             if not self.cfg.raw_dir.exists():
                 return 0
@@ -164,6 +186,65 @@ class Ripperr:
                 proc.process(self.store, ep, force=force)
                 self.store.rebuild_speaker_profiles(ep.feed_id, changed_guid=ep.guid)
             return [self.store.episode(ep.guid) for ep in todo]
+
+    # ---- remote workers (docs/worker-contract.md) --------------------------
+
+    def prepare(self, limit: int | None = None, *, retry_errors: bool = False) -> list[Episode]:
+        """Download and normalize pending episodes so workers can claim them.
+        Runs no models. Returns the episodes that are now ready."""
+        ready = []
+        for ep in self.store.pending(limit=limit, retry_errors=retry_errors):
+            self.log(f"[{ep.id}] {ep.title or ep.guid}")
+            try:
+                prepare_audio(self.store, self.cfg, ep, self.log)
+            except Exception as exc:  # noqa: BLE001 - one bad download shouldn't stop the rest
+                self.log(f"  ! failed: {exc}")
+                self.store.set_status(ep.id, STATUS_ERROR, error=traceback.format_exc(limit=3))
+                continue
+            if ep.status == STATUS_ERROR:  # a retried failure goes back in the queue
+                self.store.set_status(ep.id, STATUS_DOWNLOADED)
+            ready.append(self.store.episode(ep.guid))
+        return ready
+
+    def claim_work(self, worker: str) -> tuple[Episode, str, str] | None:
+        """Lease the next prepared episode to a worker: (episode, lease_id, expires)."""
+        return self.store.claim(worker, self.cfg.lease_seconds)
+
+    def work_audio(self, guid: str, lease_id: str) -> Path:
+        """The leased episode's 16 kHz mono WAV."""
+        ep = self.store.lease_holder(guid, lease_id)
+        if ep is None:
+            raise LeaseError("lease is not current")
+        return prepare_audio(self.store, self.cfg, ep, self.log)
+
+    def submit_work(self, guid: str, body: dict, *, glossary: list[str] | None = None) -> Episode:
+        """Apply a worker's result (validated first, then at most once per lease)
+        and return the episode as it now stands."""
+        result = parse_work_result(body)
+        lease_id = body.get("lease_id")
+        ep = self.store.consume_lease(guid, lease_id) if isinstance(lease_id, str) else None
+        if ep is None:
+            raise LeaseError("lease is not current")
+        self.log(f"[{ep.id}] {ep.title or ep.guid}: worker result")
+        try:
+            apply_work_result(self.store, self.cfg, ep, result, self._terms(glossary), self.log)
+        except Exception:
+            self.store.set_status(ep.id, STATUS_ERROR, error=traceback.format_exc(limit=3))
+            raise
+        self.store.rebuild_speaker_profiles(ep.feed_id, changed_guid=ep.guid)
+        if not self.cfg.keep_audio and ep.audio_path:
+            try:
+                delete_audio(self.store, ep, wav16k_path(Path(ep.audio_path), self.cfg.audio_dir))
+            except OSError as exc:
+                self.log(f"  ! could not delete audio: {exc}")
+        return self.store.episode(guid)
+
+    def fail_work(self, guid: str, lease_id: str, error: str) -> None:
+        """Record a worker's failure and release its lease."""
+        ep = self.store.consume_lease(guid, lease_id)
+        if ep is None:
+            raise LeaseError("lease is not current")
+        self.store.set_status(ep.id, STATUS_ERROR, error=f"worker: {error}"[:2000])
 
     def remerge(self, ref: str | int, *, glossary: list[str] | None = None) -> Episode:
         """Redo the glossary and merge stages from cached model output. Cheap, so

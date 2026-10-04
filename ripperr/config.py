@@ -24,6 +24,15 @@ def _runtime_version(package: str) -> str | None:
         return None
 
 
+def stage_key(config: dict[str, object]) -> str:
+    """Short, stable id for one model configuration of an ASR or diarization run.
+    Raw model output is cached under it, so two models never share a cache file."""
+    payload = {**config, "version": _CACHE_FORMAT_VERSION}
+    return hashlib.sha256(json.dumps(
+        payload, sort_keys=True, separators=(",", ":")
+    ).encode()).hexdigest()[:12]
+
+
 def _env_path(name: str, default: Path) -> Path:
     raw = os.environ.get(name)
     return Path(raw).expanduser() if raw else default
@@ -98,6 +107,14 @@ class Config:
 
     keep_audio: bool = field(default_factory=lambda: os.environ.get("RIPPERR_KEEP_AUDIO", "1") != "0")
 
+    # Remote workers (docs/worker-contract.md). A claimed episode returns to the
+    # queue once its lease expires. Speaker vectors from any other embedding
+    # space are dropped: vectors from different models are not comparable.
+    lease_seconds: int = field(default_factory=lambda: int(os.environ.get("RIPPERR_LEASE_SECONDS", "7200")))
+    embedding_space: str = field(default_factory=lambda: os.environ.get(
+        "RIPPERR_EMBEDDING_SPACE", "senko-campplus"
+    ))
+
     def __post_init__(self) -> None:
         self.asr_backend = resolve_asr_backend(self.asr_backend)
         self.diarization_backend = resolve_diarization_backend(self.diarization_backend)
@@ -124,16 +141,16 @@ class Config:
         re-running the models."""
         return self.root / "raw"
 
-    def raw_path(self, guid: str, kind: str) -> Path:
-        """Cache path keyed by episode and the model configuration for the stage."""
+    def raw_path(self, guid: str, kind: str, key: str | None = None) -> Path:
+        """Cache path keyed by episode and the model configuration for the stage.
+        `key` is a `stage_key` from elsewhere (a worker's model); None means this
+        machine's own configured models."""
         if kind not in {"asr", "diar", "embed"}:
             raise ValueError("cache kind must be asr, diar, or embed")
-        episode_key = self.episode_key(guid)
-        config = self._cache_config(kind)
-        config_key = hashlib.sha256(json.dumps(
-            config, sort_keys=True, separators=(",", ":")
-        ).encode()).hexdigest()[:12]
-        return self.raw_dir / f"{episode_key}.{kind}-{config_key}.json"
+        return self.raw_dir / f"{self.episode_key(guid)}.{kind}-{key or self.cache_key(kind)}.json"
+
+    def cache_key(self, kind: str) -> str:
+        return stage_key(self._cache_config(kind))
 
     @staticmethod
     def episode_key(guid: str) -> str:

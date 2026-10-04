@@ -17,11 +17,15 @@ def _require_ffmpeg() -> None:
         raise RuntimeError("ffmpeg not found on PATH (brew install ffmpeg)")
 
 
+def wav16k_path(src: Path, dest_dir: Path) -> Path:
+    return dest_dir / (src.stem + ".16k.wav")
+
+
 def to_wav16k(src: Path, dest_dir: Path) -> Path:
     """Convert any input to 16 kHz mono signed 16-bit WAV."""
     _require_ffmpeg()
     dest_dir.mkdir(parents=True, exist_ok=True)
-    dest = dest_dir / (src.stem + ".16k.wav")
+    dest = wav16k_path(src, dest_dir)
     if dest.exists() and dest.stat().st_size > 0:
         return dest
 

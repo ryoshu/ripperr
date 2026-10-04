@@ -59,6 +59,11 @@ def cmd_run(args, rip: Ripperr) -> int:
     return 0
 
 
+def cmd_prepare(args, rip: Ripperr) -> int:
+    print(f"{len(rip.prepare(limit=args.limit, retry_errors=args.retry))} episode(s) ready for workers")
+    return 0
+
+
 def cmd_status(args, rip: Ripperr) -> int:
     stats = rip.stats()
     if not stats:
@@ -210,6 +215,11 @@ def build_parser() -> argparse.ArgumentParser:
     r.add_argument("--force", action="store_true", help="ignore cached model output")
     r.add_argument("--retry", action="store_true", help="also retry episodes that failed")
     r.set_defaults(func=cmd_run)
+
+    pr = sub.add_parser("prepare", help="download and normalize pending episodes for remote workers")
+    pr.add_argument("--limit", type=int, default=None)
+    pr.add_argument("--retry", action="store_true", help="also retry episodes that failed")
+    pr.set_defaults(func=cmd_prepare)
 
     st = sub.add_parser("status", help="episode counts by state")
     st.set_defaults(func=cmd_status)

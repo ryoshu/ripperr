@@ -334,7 +334,7 @@ def test_old_database_is_migrated(tmp_path):
     assert store.add_episode(1, "g", "T", None, "a") is False  # not duplicated on the next sync
     assert store.add_episode(1, "new", "N", None, "b") is True
     assert store.episode(public_guid("u", "new")).source_guid == "new"
-    assert store.conn.execute("PRAGMA user_version").fetchone()[0] == 8
+    assert store.conn.execute("PRAGMA user_version").fetchone()[0] == 9
 
 
 def test_current_schema_skips_migration_on_reopen(tmp_path, monkeypatch):
@@ -369,7 +369,7 @@ def test_schema_migrates_old_change_constraint(tmp_path):
     store = Store(db)
     Store._insert_change(store.conn, "episode", 1, "deleted")
     assert store.changes()[0].kind == "deleted"
-    assert store.conn.execute("PRAGMA user_version").fetchone()[0] == 8
+    assert store.conn.execute("PRAGMA user_version").fetchone()[0] == 9
     store.close()
 
 
@@ -396,7 +396,7 @@ def test_v2_deleted_events_seed_tombstones(tmp_path):
     assert store.conn.execute(
         "SELECT revision FROM episode_tombstones WHERE guid = 'episode'"
     ).fetchone()[0] == 3
-    assert store.conn.execute("PRAGMA user_version").fetchone()[0] == 8
+    assert store.conn.execute("PRAGMA user_version").fetchone()[0] == 9
     store.close()
 
 

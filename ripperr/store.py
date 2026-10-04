@@ -12,9 +12,10 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+import secrets
 import sqlite3
 from contextlib import contextmanager
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from email.utils import parsedate_to_datetime
 from pathlib import Path
 from typing import Iterator, Mapping, Sequence
@@ -32,7 +33,7 @@ from .models import (
     Turn,
 )
 
-SCHEMA_VERSION = 8
+SCHEMA_VERSION = 9
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS feeds (
@@ -59,7 +60,12 @@ CREATE TABLE IF NOT EXISTS episodes (
     updated_at  TEXT NOT NULL,
     revision    INTEGER NOT NULL DEFAULT 0,
     merged_at   TEXT,
-    diarization_key TEXT
+    diarization_key TEXT,
+    asr_key     TEXT,
+    diar_key    TEXT,
+    lease_id    TEXT,
+    lease_worker TEXT,
+    lease_expires TEXT
 );
 
 CREATE INDEX IF NOT EXISTS idx_episodes_status ON episodes(status);
@@ -291,6 +297,14 @@ class Store:
                 )"""
             )
 
+        # Version 9 adds remote-worker leases, and records which model run an
+        # episode's transcript was merged from (NULL: this machine's own models).
+        if version < 9:
+            cols = {r["name"] for r in self.conn.execute("PRAGMA table_info(episodes)")}
+            for name in ("asr_key", "diar_key", "lease_id", "lease_worker", "lease_expires"):
+                if name not in cols:
+                    self.conn.execute(f"ALTER TABLE episodes ADD COLUMN {name} TEXT")
+
     def close(self) -> None:
         self.conn.close()
 
@@ -461,10 +475,15 @@ class Store:
             return False
 
     def pending(self, limit: int | None = None, retry_errors: bool = False) -> list[Episode]:
+        """Episodes still to process, newest first. Leased episodes belong to a
+        remote worker until the lease expires."""
         sql = (
-            "SELECT * FROM episodes WHERE status IN (?, ?, ?) ORDER BY published DESC, id DESC"
+            "SELECT * FROM episodes WHERE status IN (?, ?, ?) "
+            "AND (lease_expires IS NULL OR lease_expires <= ?) ORDER BY published DESC, id DESC"
         )
-        params: list[object] = [STATUS_NEW, STATUS_DOWNLOADED, STATUS_ERROR if retry_errors else STATUS_NEW]
+        params: list[object] = [
+            STATUS_NEW, STATUS_DOWNLOADED, STATUS_ERROR if retry_errors else STATUS_NEW, _now(),
+        ]
         if limit:
             sql += " LIMIT ?"
             params.append(limit)
@@ -541,6 +560,64 @@ class Store:
         params.append(episode_id)
         with self.tx() as c:
             c.execute(f"UPDATE episodes SET {', '.join(sets)} WHERE id = ?", params)
+
+    # ---- remote work leases ----------------------------------------------
+
+    def claim(self, worker: str, lease_seconds: int) -> tuple[Episode, str, str] | None:
+        """Lease the newest downloaded episode to a worker. Returns (episode,
+        lease_id, lease_expires), or None when nothing is claimable. Atomic: the
+        conditional UPDATE means two claimers never get the same lease."""
+        now = datetime.now(timezone.utc)
+        now_text = now.isoformat(timespec="seconds")
+        expires = (now + timedelta(seconds=lease_seconds)).isoformat(timespec="seconds")
+        while True:
+            row = self.conn.execute(
+                "SELECT id FROM episodes WHERE status = ? AND audio_path IS NOT NULL "
+                "AND (lease_expires IS NULL OR lease_expires <= ?) "
+                "ORDER BY published DESC, id DESC LIMIT 1",
+                (STATUS_DOWNLOADED, now_text),
+            ).fetchone()
+            if row is None:
+                return None
+            lease_id = secrets.token_urlsafe(16)
+            with self.tx() as c:
+                taken = c.execute(
+                    "UPDATE episodes SET lease_id = ?, lease_worker = ?, lease_expires = ? "
+                    "WHERE id = ? AND (lease_expires IS NULL OR lease_expires <= ?)",
+                    (lease_id, worker, expires, row["id"], now_text),
+                ).rowcount
+            if taken:
+                return self.episode_by_id(row["id"]), lease_id, expires
+
+    def lease_holder(self, guid: str, lease_id: str) -> Episode | None:
+        """The episode if `lease_id` is its current lease. An expired lease still
+        holds until someone else claims the episode."""
+        row = self.conn.execute(
+            "SELECT * FROM episodes WHERE guid = ? AND lease_id = ?", (guid, lease_id)
+        ).fetchone()
+        return _episode(row) if row else None
+
+    def consume_lease(self, guid: str, lease_id: str) -> Episode | None:
+        """End a lease, once. Returns the episode only to the one caller that
+        ended it, so a retried or duplicate result is never applied twice."""
+        with self.tx() as c:
+            ended = c.execute(
+                "UPDATE episodes SET lease_id = NULL, lease_worker = NULL, lease_expires = NULL "
+                "WHERE guid = ? AND lease_id = ?",
+                (guid, lease_id),
+            ).rowcount
+        return self.episode(guid) if ended else None
+
+    def raw_keys(self, guid: str) -> tuple[str | None, str | None]:
+        """(asr_key, diar_key) of the model run the transcript was merged from."""
+        row = self.conn.execute("SELECT asr_key, diar_key FROM episodes WHERE guid = ?", (guid,)).fetchone()
+        return (row["asr_key"], row["diar_key"]) if row else (None, None)
+
+    def set_raw_keys(self, episode_id: int, asr_key: str | None, diar_key: str | None) -> None:
+        with self.tx() as c:
+            c.execute(
+                "UPDATE episodes SET asr_key = ?, diar_key = ? WHERE id = ?", (asr_key, diar_key, episode_id)
+            )
 
     def clear_audio(self, episode_id: int) -> None:
         """Forget the source audio path, after the file has been deleted."""

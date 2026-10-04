@@ -156,6 +156,12 @@ positions across revisions.
 - `process` does not raise for a failing episode. It records the error on that
   episode, moves on, and returns it with status `error`. This includes a missing
   ML dependency: install the matching `apple` or `linux` extra for processing.
+- Remote workers: `prepare(limit=None, retry_errors=False)` downloads and
+  normalizes pending episodes without running models, and `claim_work`,
+  `work_audio`, `submit_work` and `fail_work` implement the lease protocol in
+  [worker-contract.md](worker-contract.md). A leased episode is skipped by
+  `process` until its lease expires. `submit_work` raises `LeaseError` when the
+  lease is not current and `ValueError` for a malformed result.
 - `glossary`: a list of terms. `None` reads the glossary file (`glossary.txt` under
   the data directory, or `RIPPERR_GLOSSARY`); `[]` turns the glossary off.
 - Only the work up to that transaction can mark an episode `error`. Once the
@@ -242,6 +248,9 @@ binds: bearer tokens authenticate requests but do not encrypt HTTP traffic.
 For a remote consumer, keep Ripperr loopback-only and put a TLS reverse proxy,
 SSH tunnel, or private-network gateway in front of it. `--token TOKEN` remains
 available as defense in depth behind that trusted boundary.
+
+The `/v1/work/*` endpoints for remote model workers are specified in
+[worker-contract.md](worker-contract.md); they always require the token.
 
 `GET /healthz` returns `ok` and the highest committed `change_seq`. `GET
 /v1/changes?after=SEQ&limit=N` returns ascending, cursor-based metadata and

@@ -8,14 +8,16 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import os
 import tempfile
 import traceback
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
 
 from . import asr, audio, diarize, feeds, glossary, merge
-from .config import Config
+from .config import Config, stage_key
 from .models import Correction, Episode, Turn
 from .store import STATUS_DOWNLOADED, STATUS_ERROR, Store
 
@@ -188,6 +190,7 @@ class Processor:
             asr_result = self._ensure_asr(episode, wav, force)
             segments = self._ensure_diarization(episode, wav, force)
             embeddings = _read_embedding_cache(self.cfg.raw_path(episode.guid, "embed"))
+            store.set_raw_keys(episode.id, None, None)  # this machine's own models
 
             n_turns, n_words = merge_and_save(
                 store,
@@ -216,24 +219,10 @@ class Processor:
     # ---- stages ----------------------------------------------------------
 
     def _ensure_audio(self, store: Store, episode: Episode) -> Path:
-        src = Path(episode.audio_path) if episode.audio_path else None
-        if src is None or not src.exists():
-            self.log("  downloading…")
-            src = feeds.download(episode.audio_url, self.cfg.audio_dir, episode.title)
-            store.set_status(
-                episode.id,
-                STATUS_DOWNLOADED,
-                audio_path=str(src),
-                duration=audio.duration_seconds(src),
-            )
-        return audio.to_wav16k(src, self.cfg.audio_dir)
+        return prepare_audio(store, self.cfg, episode, self.log)
 
     def _delete_audio(self, store: Store, episode: Episode, wav: Path) -> None:
-        wav.unlink(missing_ok=True)
-        current = store.episode(episode.guid)  # `episode` predates a download in this run
-        if current and current.audio_path:
-            Path(current.audio_path).unlink(missing_ok=True)
-            store.clear_audio(episode.id)  # only once the file is really gone
+        delete_audio(store, episode, wav)
 
     def _ensure_asr(self, episode: Episode, wav: Path, force: bool) -> dict[str, Any]:
         cached = self.cfg.raw_path(episode.guid, "asr")
@@ -272,17 +261,59 @@ class Processor:
         return segments
 
 
+def prepare_audio(store: Store, cfg: Config, episode: Episode, log: Log = print) -> Path:
+    """Download the episode if needed and return its 16 kHz mono WAV."""
+    src = Path(episode.audio_path) if episode.audio_path else None
+    if src is None or not src.exists():
+        log("  downloading…")
+        src = feeds.download(episode.audio_url, cfg.audio_dir, episode.title)
+        store.set_status(
+            episode.id,
+            STATUS_DOWNLOADED,
+            audio_path=str(src),
+            duration=audio.duration_seconds(src),
+        )
+    return audio.to_wav16k(src, cfg.audio_dir)
+
+
+def delete_audio(store: Store, episode: Episode, wav: Path) -> None:
+    wav.unlink(missing_ok=True)
+    current = store.episode(episode.guid)  # `episode` may predate a download
+    if current and current.audio_path:
+        Path(current.audio_path).unlink(missing_ok=True)
+        store.clear_audio(episode.id)  # only once the file is really gone
+
+
+def raw_output_path(store: Store, cfg: Config, episode: Episode, kind: str) -> Path:
+    """Where the model output the episode's transcript came from is cached.
+    Embeddings belong to the diarization run."""
+    asr_key, diar_key = store.raw_keys(episode.guid)
+    key = asr_key if kind == "asr" else diar_key
+    if key:
+        return cfg.raw_path(episode.guid, kind, key)
+    own = cfg.raw_path(episode.guid, kind)
+    if own.exists():
+        return own
+    # ponytail: transcripts merged before schema 9 have no recorded key and may
+    # come from models this machine no longer has; take the newest cache file.
+    found = sorted(
+        cfg.raw_dir.glob(f"{cfg.episode_key(episode.guid)}.{kind}-*.json"),
+        key=lambda path: path.stat().st_mtime,
+    )
+    return found[-1] if found else own
+
+
 def remerge(
     store: Store, cfg: Config, episode: Episode, terms: list[str], log: Log = print
 ) -> None:
     """Re-run only the glossary and merge stages from cached model output. Cheap:
     use it to tune max_turn_gap or refresh the glossary without paying for ASR."""
-    asr_result = _read_cache(cfg.raw_path(episode.guid, "asr"))
-    segments = _read_cache(cfg.raw_path(episode.guid, "diar"))
+    asr_result = _read_cache(raw_output_path(store, cfg, episode, "asr"))
+    segments = _read_cache(raw_output_path(store, cfg, episode, "diar"))
     if asr_result is None or segments is None:
         raise FileNotFoundError(f"no usable cached model output for episode {episode.guid}")
 
-    embeddings = _read_embedding_cache(cfg.raw_path(episode.guid, "embed"))
+    embeddings = _read_embedding_cache(raw_output_path(store, cfg, episode, "embed"))
     merge_and_save(
         store,
         cfg,
@@ -293,6 +324,115 @@ def remerge(
         log,
         speaker_embeddings=embeddings,
     )
+
+
+WORKER_SCHEMAS = (1,)
+
+
+@dataclass(frozen=True)
+class WorkResult:
+    """A worker's model output, checked against docs/worker-contract.md."""
+    asr_key: str
+    asr: dict[str, Any]  # {"segments": [...]}, the shape the ASR cache stores
+    diar_key: str
+    segments: list[dict[str, Any]]
+    embedding_space: str | None
+    embeddings: dict[str, list[float]] | None
+
+
+def parse_work_result(body: Mapping[str, Any]) -> WorkResult:
+    """Validate a result body. Raises ValueError naming the first problem."""
+    if body.get("schema") not in WORKER_SCHEMAS:
+        raise ValueError(f"schema must be one of {list(WORKER_SCHEMAS)}")
+    asr_body, diar_body = body.get("asr"), body.get("diarization")
+    if not isinstance(asr_body, dict) or not isinstance(diar_body, dict):
+        raise ValueError("asr and diarization objects are required")
+
+    asr_segments = _list_of_dicts(asr_body.get("segments"), "asr.segments")
+    for seg in asr_segments:
+        _times(seg, "asr segment", allow_none=True)
+        if not isinstance(seg.get("text", ""), str):
+            raise ValueError("asr segment text must be a string")
+        for word in _list_of_dicts(seg.get("words") or [], "asr words"):
+            _times(word, "asr word", allow_none=True)
+            if not isinstance(word.get("word", ""), str):
+                raise ValueError("asr word must be a string")
+
+    segments = []
+    for seg in _list_of_dicts(diar_body.get("segments"), "diarization.segments"):
+        start, end = _times(seg, "diarization segment")
+        if not isinstance(seg.get("speaker"), str) or not seg["speaker"]:
+            raise ValueError("diarization segment speaker must be a non-empty string")
+        segments.append({"start": start, "end": end, "speaker": seg["speaker"]})
+    segments.sort(key=lambda seg: (seg["start"], seg["end"]))
+
+    space, embeddings = None, None
+    embed_body = diar_body.get("embeddings")
+    if embed_body is not None:
+        speakers = embed_body.get("speakers") if isinstance(embed_body, dict) else None
+        space = embed_body.get("space") if isinstance(embed_body, dict) else None
+        if not isinstance(space, str) or not isinstance(speakers, dict):
+            raise ValueError("diarization.embeddings needs a space string and a speakers object")
+        embeddings = {}
+        for speaker, vector in speakers.items():
+            if not isinstance(vector, list) or not vector or not all(_is_number(v) for v in vector):
+                raise ValueError("each speaker embedding must be a non-empty list of numbers")
+            embeddings[speaker] = [float(v) for v in vector]
+
+    return WorkResult(
+        asr_key=stage_key(_model_config(asr_body.get("config"), "asr")),
+        asr={"segments": asr_segments},
+        diar_key=stage_key(_model_config(diar_body.get("config"), "diarization")),
+        segments=segments,
+        embedding_space=space,
+        embeddings=embeddings,
+    )
+
+
+def apply_work_result(
+    store: Store, cfg: Config, episode: Episode, result: WorkResult, terms: list[str], log: Log = print
+) -> tuple[int, int]:
+    """Cache a worker's output under its own model keys and merge it, exactly as
+    if this machine had produced it. Returns (turns, words)."""
+    embeddings = result.embeddings
+    if embeddings is not None and result.embedding_space != cfg.embedding_space:
+        log(f"  ! dropping speaker embeddings from space {result.embedding_space!r}; "
+            f"this database uses {cfg.embedding_space!r}")
+        embeddings = None
+    cfg.raw_dir.mkdir(parents=True, exist_ok=True)
+    _write_cache(cfg.raw_path(episode.guid, "asr", result.asr_key), result.asr)
+    _write_cache(cfg.raw_path(episode.guid, "diar", result.diar_key), result.segments)
+    _write_cache(cfg.raw_path(episode.guid, "embed", result.diar_key), embeddings or {})
+    store.set_raw_keys(episode.id, result.asr_key, result.diar_key)
+    return merge_and_save(
+        store, cfg, episode, result.asr, result.segments, terms, log, speaker_embeddings=embeddings,
+    )
+
+
+def _is_number(value: Any) -> bool:
+    return isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value)
+
+
+def _list_of_dicts(value: Any, name: str) -> list[dict[str, Any]]:
+    if not isinstance(value, list) or not all(isinstance(item, dict) for item in value):
+        raise ValueError(f"{name} must be a list of objects")
+    return value
+
+
+def _times(item: Mapping[str, Any], name: str, *, allow_none: bool = False) -> tuple[float, float]:
+    start, end = item.get("start"), item.get("end")
+    for value in (start, end):
+        if not (_is_number(value) or (allow_none and value is None)):
+            raise ValueError(f"{name} start and end must be numbers")
+    return start, end
+
+
+def _model_config(value: Any, name: str) -> dict[str, Any]:
+    if not isinstance(value, dict) or not isinstance(value.get("backend"), str):
+        raise ValueError(f"{name}.config must be an object with a backend")
+    if not all(v is None or isinstance(v, (str, int, float)) for v in value.values()):
+        raise ValueError(f"{name}.config values must be strings, numbers or null")
+    return value
 
 
 def _read_embedding_cache(path: Path) -> dict[str, list[float]] | None:

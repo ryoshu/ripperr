@@ -56,6 +56,7 @@ ripperr run --limit 3           # download + transcribe + diarize
 ripperr show 12 --out ep12.md   # markdown transcript
 ripperr search "interest rates"
 ripperr status
+ripperr prepare                 # download + normalize only, for remote workers
 ```
 
 Maintenance operations such as `prune_changes()` and `prune_cache()` are
@@ -79,6 +80,8 @@ Settings come from the environment:
 | `RIPPERR_DEEPINFRA_TOKEN` | optional DeepInfra token for LLM guest extraction (`DEEPINFRA_TOKEN` also works) |
 | `RIPPERR_DEEPINFRA_MODEL` | DeepInfra model (default `deepseek-ai/DeepSeek-V4-Flash-0731`) |
 | `RIPPERR_DEEPINFRA_BASE_URL` | DeepInfra OpenAI-compatible base URL |
+| `RIPPERR_LEASE_SECONDS` | how long a remote worker holds a claimed episode (default 7200) |
+| `RIPPERR_EMBEDDING_SPACE` | speaker-vector space accepted from workers (default `senko-campplus`) |
 
 Run the tests with `uv pip install pytest && python -m pytest tests`.
 
@@ -103,6 +106,15 @@ never modified, so `ripperr remerge <id>` re-applies a changed glossary in secon
 
 What goes in the glossary is up to the caller. ripperr has no idea what a player
 or a company is.
+
+### Remote workers
+
+Model inference can run on a different machine from everything else. Run
+`ripperr sync && ripperr prepare` on an always-on host with `ripperr serve`
+and a bearer token, and point a worker (the separate `ripperr-worker` repo) at
+it. The worker claims prepared episodes, transcribes and diarizes them, and
+uploads the result; ripperr merges it as if it had run the models itself.
+The HTTP contract is in [docs/worker-contract.md](docs/worker-contract.md).
 
 For unattended operation, a launchd agent or cron job running
 `ripperr sync && ripperr run` is all you need.

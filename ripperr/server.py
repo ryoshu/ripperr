@@ -6,12 +6,14 @@ import hashlib
 import hmac
 import ipaddress
 import json
+import shutil
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, unquote, urlparse
 
-from .api import ChangeLogPrunedError, ProcessingBusyError, Ripperr
+from .api import ChangeLogPrunedError, LeaseError, ProcessingBusyError, Ripperr
 from .config import Config
+from .pipeline import WORKER_SCHEMAS
 
 
 def _loopback(host: str) -> bool:
@@ -58,6 +60,7 @@ def make_handler(cfg: Config, token: str | None = None):
 
         def _dispatch(self, method: str, *, write: bool = False) -> None:
             parsed = urlparse(self.path)
+            write = write or parsed.path.startswith(_WORK_PREFIX)  # workers always need the token
             speaker_write = write and _is_speaker_path(parsed.path)
             if not self._authorized(write=write and not speaker_write):
                 return
@@ -70,7 +73,7 @@ def make_handler(cfg: Config, token: str | None = None):
             except LookupError as exc:
                 _json(self, {"error": str(exc)}, HTTPStatus.NOT_FOUND)
             # Keep typed operational errors ahead of the generic HTTP fallbacks.
-            except ProcessingBusyError as exc:
+            except (ProcessingBusyError, LeaseError) as exc:
                 _json(self, {"error": str(exc)}, HTTPStatus.CONFLICT)
             except ChangeLogPrunedError as exc:
                 _json(
@@ -89,7 +92,7 @@ def make_handler(cfg: Config, token: str | None = None):
 
         def _authorized(self, *, write: bool = False) -> bool:
             if write and not token:
-                _json(self, {"error": "feed management requires a bearer token"},
+                _json(self, {"error": "this endpoint requires the server to have a bearer token configured"},
                       HTTPStatus.SERVICE_UNAVAILABLE)
                 return False
             if token and not hmac.compare_digest(
@@ -136,6 +139,17 @@ def make_handler(cfg: Config, token: str | None = None):
                     "next_cursor": next_cursor,
                     "has_more": has_more,
                 })
+                return
+
+            if _work_path(parsed.path, "audio"):
+                lease_id = parse_qs(parsed.query).get("lease_id", [""])[0]
+                wav = rip.work_audio(_work_path(parsed.path, "audio"), lease_id)
+                with wav.open("rb") as fh:
+                    self.send_response(HTTPStatus.OK)
+                    self.send_header("Content-Type", "audio/wav")
+                    self.send_header("Content-Length", str(wav.stat().st_size))
+                    self.end_headers()
+                    shutil.copyfileobj(fh, self.wfile)
                 return
 
             prefix = "/v1/episodes/"
@@ -189,6 +203,38 @@ def make_handler(cfg: Config, token: str | None = None):
                 })
                 return
 
+            if parsed.path == _WORK_PREFIX + "claim":
+                body = self._json_body()
+                worker = body.get("worker")
+                if not isinstance(worker, str) or not worker.strip():
+                    raise ValueError("worker is required")
+                if body.get("schema") not in WORKER_SCHEMAS:
+                    _json(self, {"error": "unsupported schema", "supported": list(WORKER_SCHEMAS)},
+                          HTTPStatus.BAD_REQUEST)
+                    return
+                claimed = rip.claim_work(worker.strip()[:100])
+                if claimed is None:
+                    self.send_response(HTTPStatus.NO_CONTENT)
+                    self.end_headers()
+                    return
+                episode, lease_id, expires = claimed
+                _json(self, {
+                    "guid": episode.guid,
+                    "lease_id": lease_id,
+                    "lease_expires": expires,
+                    "duration_s": episode.duration,
+                })
+                return
+
+            if _work_path(parsed.path, "fail"):
+                body = self._json_body()
+                lease_id, error = body.get("lease_id"), body.get("error")
+                if not isinstance(lease_id, str) or not isinstance(error, str):
+                    raise ValueError("lease_id and error are required")
+                rip.fail_work(_work_path(parsed.path, "fail"), lease_id, error)
+                _json(self, {"ok": True})
+                return
+
             if parsed.path != "/v1/feeds":
                 _json(self, {"error": "not found"}, HTTPStatus.NOT_FOUND)
                 return
@@ -206,6 +252,12 @@ def make_handler(cfg: Config, token: str | None = None):
             _json(self, body, HTTPStatus.CREATED)
 
         def _put(self, rip: Ripperr, parsed) -> None:
+            if _work_path(parsed.path, "result"):
+                body = self._json_body(max_bytes=_MAX_RESULT_BYTES)
+                episode = rip.submit_work(_work_path(parsed.path, "result"), body)
+                _json(self, {"guid": episode.guid, "revision": episode.revision})
+                return
+
             if parsed.path.startswith("/v1/episodes/") and "/speakers/" in parsed.path:
                 guid, speaker = _speaker_path(parsed.path)
                 name = self._speaker_payload()
@@ -278,13 +330,13 @@ def make_handler(cfg: Config, token: str | None = None):
                 raise ValueError("backfill must be an integer from 1 to 100")
             return url, title, backfill
 
-        def _json_body(self) -> dict[str, object]:
+        def _json_body(self, max_bytes: int = 16_384) -> dict[str, object]:
             try:
                 length = int(self.headers.get("Content-Length", "0"))
             except ValueError as exc:
                 raise ValueError("invalid content length") from exc
-            if length <= 0 or length > 16_384:
-                raise ValueError("request body must be between 1 and 16384 bytes")
+            if length <= 0 or length > max_bytes:
+                raise ValueError(f"request body must be between 1 and {max_bytes} bytes")
             try:
                 body = json.loads(self.rfile.read(length))
             except (json.JSONDecodeError, UnicodeDecodeError) as exc:
@@ -294,6 +346,18 @@ def make_handler(cfg: Config, token: str | None = None):
             return body
 
     return Handler
+
+
+_WORK_PREFIX = "/v1/work/"
+_MAX_RESULT_BYTES = 64 * 1024 * 1024
+
+
+def _work_path(path: str, action: str) -> str | None:
+    """The guid in /v1/work/{guid}/{action}, or None for any other path."""
+    if not path.startswith(_WORK_PREFIX) or not path.endswith("/" + action):
+        return None
+    guid = unquote(path[len(_WORK_PREFIX):-len(action) - 1])
+    return guid if guid and "/" not in guid else None
 
 
 def _feed_json(feed) -> dict[str, object]:
