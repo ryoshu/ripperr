@@ -193,9 +193,17 @@ def make_handler(cfg: Config, token: str | None = None):
                 _json(self, {"error": "not found"}, HTTPStatus.NOT_FOUND)
                 return
 
-            url, title = self._feed_payload()
+            url, title, backfill = self._feed_payload()
             feed = rip.add_feed(url, title)
-            _json(self, {"feed": _feed_json(feed)}, HTTPStatus.CREATED)
+            body: dict[str, object] = {"feed": _feed_json(feed)}
+            if backfill:
+                try:
+                    body["backfilled"] = rip.backfill(feed.id, backfill)
+                except Exception:  # noqa: BLE001 - the feed is stored; only the fetch failed
+                    body["error"] = "feed stored, but it could not be fetched for backfill"
+                    _json(self, body, HTTPStatus.BAD_GATEWAY)
+                    return
+            _json(self, body, HTTPStatus.CREATED)
 
         def _put(self, rip: Ripperr, parsed) -> None:
             if parsed.path.startswith("/v1/episodes/") and "/speakers/" in parsed.path:
@@ -206,7 +214,7 @@ def make_handler(cfg: Config, token: str | None = None):
                 return
 
             feed_id = _feed_id(parsed.path)
-            url, title = self._feed_payload()
+            url, title, _ = self._feed_payload()
             feed = rip.update_feed(feed_id, url, title)
             _json(self, {"feed": _feed_json(feed)})
 
@@ -230,7 +238,7 @@ def make_handler(cfg: Config, token: str | None = None):
                 raise ValueError("name is required")
             return name
 
-        def _feed_payload(self) -> tuple[str, str | None]:
+        def _feed_payload(self) -> tuple[str, str | None, int | None]:
             body = self._json_body()
             url = body.get("url")
             if not isinstance(url, str) or not url.strip():
@@ -263,7 +271,12 @@ def make_handler(cfg: Config, token: str | None = None):
             if title is not None and not isinstance(title, str):
                 raise ValueError("title must be a string")
             title = title.strip() if title else None
-            return url, title
+            backfill = body.get("backfill")
+            if backfill is not None and (
+                isinstance(backfill, bool) or not isinstance(backfill, int) or not 1 <= backfill <= 100
+            ):
+                raise ValueError("backfill must be an integer from 1 to 100")
+            return url, title, backfill
 
         def _json_body(self) -> dict[str, object]:
             try:

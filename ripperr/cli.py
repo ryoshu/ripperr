@@ -32,6 +32,8 @@ def _ref(text: str) -> int | str:
 def cmd_add(args, rip: Ripperr) -> int:
     feed = rip.add_feed(args.url)
     print(f"feed {feed.id}: {feed.url}")
+    if args.backfill:
+        print(f"{rip.backfill(feed.id, args.backfill)} episode(s) backfilled")
     print("run `ripperr sync` to pull in the episode list")
     return 0
 
@@ -193,6 +195,8 @@ def build_parser() -> argparse.ArgumentParser:
 
     a = sub.add_parser("add", help="add an RSS feed")
     a.add_argument("url")
+    a.add_argument("--backfill", type=int, metavar="N",
+                   help="also record the feed's N newest episodes, not just the latest")
     a.set_defaults(func=cmd_add)
 
     f = sub.add_parser("feeds", help="list feeds")

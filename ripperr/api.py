@@ -35,7 +35,7 @@ from .models import (
     Transcript,
 )
 from .identity import guest_hints as extract_guest_hints
-from .pipeline import Log, Processor, remerge, sync_feeds
+from .pipeline import Log, Processor, backfill_feed, remerge, sync_feeds
 from .store import Store
 
 
@@ -129,6 +129,11 @@ class Ripperr:
     def sync(self) -> int:
         """Poll every feed and record new episodes. Returns how many were new."""
         return sync_feeds(self.store, self.log)
+
+    def backfill(self, feed_id: int, count: int) -> int:
+        """Record a feed's `count` newest entries, including older ones a normal
+        sync skips. Returns how many were new."""
+        return backfill_feed(self.store, feed_id, count, self.log)
 
     def process(
         self,

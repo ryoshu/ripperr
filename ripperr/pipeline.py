@@ -70,6 +70,29 @@ def sync_feeds(store: Store, log: Log = print) -> int:
     return total
 
 
+def backfill_feed(store: Store, feed_id: int, count: int, log: Log = print) -> int:
+    """Record the feed's `count` newest entries, whatever sync has seen so far.
+
+    Already known entries are refreshed, not duplicated, so repeating a backfill
+    is harmless. Raises if the feed cannot be loaded.
+    """
+    if count < 1:
+        raise ValueError("backfill count must be at least 1")
+    feed = store.feed(feed_id)
+    _, episodes = feeds.parse_feed(
+        feed.url, store.source_guids(feed_id), store.source_guids_without_published(feed_id),
+    )
+    new = sum(
+        store.add_episode(
+            feed_id, ep["source_guid"], ep["title"], ep["published"], ep["audio_url"],
+            ep.get("source_url"), ep.get("summary"),
+        )
+        for ep in reversed(episodes[:count])
+    )
+    log(f"  {feed.title or feed.url}: backfilled {new} new / {min(count, len(episodes))} requested")
+    return new
+
+
 def _read_cache(path: Path) -> Any | None:
     """Cached JSON, or None if it is missing or unreadable (say, cut short by a
     crash). An unreadable cache is a miss, never an error."""

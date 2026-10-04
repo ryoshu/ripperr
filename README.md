@@ -50,6 +50,7 @@ Unlike pyannote's own pipeline, no Hugging Face token or gated-model acceptance 
 
 ```bash
 ripperr add https://example.com/feed.xml
+ripperr add https://example.com/feed.xml --backfill 10   # also take the 10 newest
 ripperr sync                    # poll feeds, record new episodes
 ripperr run --limit 3           # download + transcribe + diarize
 ripperr show 12 --out ep12.md   # markdown transcript

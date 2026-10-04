@@ -240,6 +240,13 @@ def test_feed_management_lists_and_adds_with_token(tmp_path):
         status, _, body = _get(server, "/v1/feeds", {"Authorization": "Bearer secret"})
         assert status == 200 and body["feeds"] == [body["feeds"][0]]
         assert body["feeds"][0]["url"] == "https://example.com/feed.xml"
+
+        for bad in (0, 101, "5", True):
+            status, _, body = _post(
+                server, "/v1/feeds", {"url": "https://example.com/feed.xml", "backfill": bad},
+                {"Authorization": "Bearer secret"},
+            )
+            assert status == 400, bad
     finally:
         server.shutdown()
         thread.join()

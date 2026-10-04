@@ -44,7 +44,8 @@ were the feed's own ids.
 | `update_feed(feed_id, url, title=None) -> Feed` | Replaces a feed's URL and title. Raises `LookupError` if unknown and `ValueError` if the URL is already registered. |
 | `delete_feed(feed_id) -> None` | Removes a feed and its stored episodes. Raises `LookupError` if unknown and `ProcessingBusyError` if model processing is active. |
 | `prune_cache() -> int` | Removes stale ASR/diarization cache variants and caches for unknown episodes. Raises `ProcessingBusyError` if model processing is active. |
-| `sync() -> int` | Polls every feed, records episodes not yet seen and returns how many were new. A new feed starts with only its newest episode; later syncs take only entries ahead of the newest known episode, so a historical playlist is not backfilled. For episodes already known it refreshes `title`, `summary`, `published` and `audio_url` when the feed now gives a different value, so corrected metadata reaches the next retry; a value the feed no longer provides never erases the stored one. Status, audio, transcript and `revision` are untouched. A feed that fails to load is logged and skipped; `sync` does not raise for it. |
+| `sync() -> int` | Polls every feed, records episodes not yet seen and returns how many were new. A new feed starts with only its newest episode; later syncs take only entries ahead of the newest known episode, so a historical playlist is not backfilled unless `backfill` is called. For episodes already known it refreshes `title`, `summary`, `published` and `audio_url` when the feed now gives a different value, so corrected metadata reaches the next retry; a value the feed no longer provides never erases the stored one. Status, audio, transcript and `revision` are untouched. A feed that fails to load is logged and skipped; `sync` does not raise for it. |
+| `backfill(feed_id, count) -> int` | Fetches the feed now and records its `count` newest entries, including older ones `sync` skips; returns how many were new. Known entries are refreshed, not duplicated, so repeating it is harmless, and later syncs still take only entries ahead of the newest known one. Raises `ValueError` for a count below 1, `LookupError` for an unknown feed, and the fetch error if the feed cannot be loaded. |
 | `process(limit=None, *, glossary=None, retry_errors=False, force=False) -> list[Episode]` | Downloads, transcribes, diarizes and merges pending episodes, then returns them as they now stand. Processing is exclusive across processes sharing the same database, so a concurrent run returns no work immediately. See "Processing". |
 | `remerge(ref, *, glossary=None) -> Episode` | Redoes the glossary and merge steps from cached model output and returns the episode. Raises `LookupError` for an unknown episode and `FileNotFoundError` if it has no usable cached model output (missing, or unreadable). |
 
@@ -252,8 +253,11 @@ returns `after` and `next_cursor`; fetch the emitted events with
 `GET /v1/changes?after=after`.
 
 `GET /v1/feeds` returns the registered feed ids, URLs and titles. `POST
-/v1/feeds` accepts `{"url": "https://…", "title": "…"}` and returns the
-idempotently stored feed. `PUT /v1/feeds/{id}` replaces an existing feed's URL
+/v1/feeds` accepts `{"url": "https://…", "title": "…", "backfill": N}` and returns the
+idempotently stored feed. The optional `backfill` (1 to 100) also records the feed's N
+newest episodes and adds `"backfilled"` (how many were new) to the response; if the feed
+cannot be fetched, the feed is still stored and the response is `502`. Repeating the call
+with a larger N on an existing feed reaches further back. `PUT /v1/feeds/{id}` replaces an existing feed's URL
 and title. `DELETE /v1/feeds/{id}` removes the feed, its stored episodes, and
 owned local audio/model-cache files.
 Deleting a feed also deletes its episode-scoped speaker names. Re-adding the same

@@ -730,3 +730,23 @@ def test_senko_is_pinned_to_a_commit():
     deps = tomllib.loads(pyproject.read_text())["project"]["optional-dependencies"]["apple"]
     senko = next(d for d in deps if d.startswith("senko"))
     assert re.search(r"git\+https://\S+@[0-9a-f]{40}$", senko), senko
+
+
+def test_backfill_records_older_entries_once_and_sync_still_takes_only_new(tmp_path, monkeypatch):
+    entries = [
+        {"source_guid": f"ep-{n}", "title": f"Ep {n}", "published": None, "audio_url": f"http://a/{n}"}
+        for n in range(5, 0, -1)  # newest first, as feeds present them
+    ]
+    monkeypatch.setattr("ripperr.feeds.parse_feed", lambda url, *_: ("Show", list(entries)))
+    rip = Ripperr(Config(root=tmp_path), log=lambda _: None)
+    fid = rip.add_feed("http://feed").id
+
+    assert rip.sync() == 1
+    assert rip.backfill(fid, 3) == 2
+    assert rip.backfill(fid, 3) == 0
+    assert {e.source_guid for e in rip.episodes()} == {"ep-5", "ep-4", "ep-3"}
+
+    entries.insert(0, {"source_guid": "ep-6", "title": "Ep 6", "published": None, "audio_url": "http://a/6"})
+    assert rip.sync() == 1
+    with pytest.raises(ValueError):
+        rip.backfill(fid, 0)
