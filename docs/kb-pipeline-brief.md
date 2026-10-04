@@ -14,7 +14,7 @@ Build the layer that turns ripperr transcripts (and later scraped pages) into a 
 | Backfill | Done: `ripperr add --backfill N`, `POST /v1/feeds {"backfill": N}` |
 | W3. MCP retrieval server | Done: `https://rickys-mac-pro.taile4827e.ts.net:8443/mcp`, own bearer token |
 | W4. Discovery to subscription | Done: `kb discover` CLI and `kb_discover` / `kb_subscribe` MCP tools; first subscription (Fantasy Footballers Dynasty, 5 episodes) made through MCP |
-| W5. Scraper | Half done: the Mac Pro ingest endpoint is live (`https://rickys-mac-pro.taile4827e.ts.net:8444/v1/pages`, own bearer token). Crawl4AI is installed on the VPS, but the crawl-and-post script is not written |
+| W5. Scraper | Done: the Mac Pro ingest endpoint is live (`https://rickys-mac-pro.taile4827e.ts.net:8444/v1/pages`, own bearer token), and `~/ripperr-crawl/crawl_push.py` on the VPS crawls URLs with Crawl4AI and posts them. Verified with two test pages (since removed). Not yet done: the home-tunnel proxy for sites that need a residential IP; no automated URL source |
 | Dashboard | Done: served by ripperr on the Mac Pro at the API's tailnet address |
 
 ## Context
@@ -138,7 +138,7 @@ Runs on the Mac Pro as `com.ryoshu.ripperr-knowledge-base.indexer`, reading ripp
 
 **Done when.** A query for a topic yields feed candidates, confirming one creates a feed in ripperr, and its episodes flow through to the index with no manual steps beyond the confirmation. Verified: Fantasy Footballers Dynasty was subscribed through `kb_subscribe` with `backfill: 5`; its episodes downloaded on the Mac Pro (the first RSS rather than YouTube feed there) and went to the worker.
 
-### W5. Scraper hookup (half done)
+### W5. Scraper hookup (done)
 
 **Why.** The knowledge base should also hold web pages, and SearXNG returns only links and snippets. The earlier fetch tests showed a plain HTTP client is not enough for some sites.
 
@@ -149,7 +149,7 @@ Runs on the Mac Pro as `com.ryoshu.ripperr-knowledge-base.indexer`, reading ripp
 - Crawl4AI on the VPS in its own virtualenv with Chromium, one page at a time (6 GB RAM). Optionally route through `socks5://127.0.0.1:1080` (the home tunnel) for sites that need a residential address.
 - Send cleaned markdown over the tailnet to a small authenticated ingestion endpoint on the Mac Pro, where the indexer owns the SQLite writes. Do not access its SQLite file remotely. Deduplicate on canonical URL plus a content hash, write `source_type = web` into the same `documents` and `chunks` schema, and record `fetched_at` so staleness is visible.
 - **Built:** `kb serve-ingest` on the Mac Pro (`POST /v1/pages` with `url`, `markdown`, optional `title` and `published`; 2 MB cap; separate `ingest-token`; exposed with `tailscale serve --https=8444`). It canonicalises the URL, returns `unchanged` for the same content hash, replaces the page's chunks when content changes, and indexes `source_type = web` with the host as the feed. It never fetches. Verified end to end over the tailnet.
-- **Not built:** the crawl-and-post script on the VPS (Crawl4AI is installed there). Rebuilding the index from ripperr drops web pages, so they must be re-posted.
+- **Crawler:** `scripts/crawl_push.py` in the knowledge-base repo, copied to `~/ripperr-crawl/` on the VPS and run with `~/crawl4ai-env/bin/python`. One URL at a time; the VPS cannot resolve `.ts.net` names, so it connects by the Mac Pro's tailnet IP. Not built: the SOCKS proxy option for sites that need a residential address, and any automatic source of URLs. Rebuilding the index from ripperr drops web pages, so they must be re-posted.
 - Out of scope here: crawling at scale. The user does not run swarms.
 
 ### W6. Evaluation set (done)
