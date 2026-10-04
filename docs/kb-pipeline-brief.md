@@ -13,7 +13,7 @@ Build the layer that turns ripperr transcripts (and later scraped pages) into a 
 | W6. Evaluation set | Done: 22 questions; hit@5 0.91, hit@10 0.95, mean rank 1.7 |
 | Backfill | Done: `ripperr add --backfill N`, `POST /v1/feeds {"backfill": N}` |
 | W3. MCP retrieval server | Done: `https://rickys-mac-pro.taile4827e.ts.net:8443/mcp`, own bearer token |
-| W4. Discovery to subscription | Done: `kb discover`; first real subscription still to make |
+| W4. Discovery to subscription | Done: `kb discover` CLI and `kb_discover` / `kb_subscribe` MCP tools; first real subscription still to make |
 | W5. Scraper | Next |
 
 ## Context
@@ -131,9 +131,9 @@ Runs on the Mac Pro as `com.ryoshu.ripperr-knowledge-base.indexer`, reading ripp
 - On confirmation, `POST /v1/feeds` with the URL, title and an optional `backfill`. Ripperr's call is idempotent, so a repeat is harmless.
 - Be polite to hosts: no parallel bulk downloads, and no automated subscribing from search results.
 
-**Built.** `kb discover QUERY [--backfill N]` in the knowledge-base repo. Podchaser results are already feed URLs; Apple Podcasts links resolve through the iTunes lookup API and other pages through their `<link rel="alternate">` feed. Each candidate shows SearXNG's episode count and the feed's newest episode, and feeds ripperr already follows are marked. Subscribing happens only at an interactive prompt. An MCP version is deferred: an agent finding feeds is useful, but subscribing should stay a deliberate step.
+**Built.** `kb discover QUERY [--backfill N]` in the knowledge-base repo. Podchaser results are already feed URLs; Apple Podcasts links resolve through the iTunes lookup API and other pages through their `<link rel="alternate">` feed. Each candidate shows SearXNG's episode count and the feed's newest episode, and feeds ripperr already follows are marked. Subscribing happens only at an interactive prompt. The MCP server also has `kb_discover` (read-only) and `kb_subscribe`, which checks the URL is a real feed and is annotated as a write, so Claude Code asks before each call; that approval is the human confirmation. Keep it off auto-approve lists.
 
-**Known limits.** SearXNG's fyyd engine currently crashes ("unexpected crash"), so results come from Podchaser alone. Podchaser matches titles and descriptions, so a host's name finds unrelated shows; topic queries work well.
+**Known limits.** SearXNG's fyyd engine currently crashes ("unexpected crash"; being fixed on the VPS), so results come from Podchaser alone. Podchaser matches titles and descriptions, so a host's name finds unrelated shows; topic queries work well.
 
 **Done when.** A query for a topic yields feed candidates, confirming one creates a feed in ripperr, and its episodes flow through to the index with no manual steps beyond the confirmation. Candidates verified; the first real subscription (also the first RSS, rather than YouTube, feed on the Mac Pro) is still to make.
 
