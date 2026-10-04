@@ -1,7 +1,7 @@
-"""Orchestration: feed sync and per-episode processing.
+"""Orchestration: feed sync, audio preparation, and merging model output.
 
-Each stage caches its output to disk, so re-running after a crash or a merge
-tweak skips the expensive model passes.
+Models run in ripperr-worker (docs/worker-contract.md). Their raw output is
+cached here under its model identity, so a merge tweak re-runs from the cache.
 """
 
 from __future__ import annotations
@@ -11,12 +11,11 @@ import json
 import math
 import os
 import tempfile
-import traceback
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
 
-from . import asr, audio, diarize, feeds, glossary, merge
+from . import audio, feeds, glossary, merge
 from .config import Config, stage_key
 from .models import Correction, Episode, Turn
 from .store import STATUS_DOWNLOADED, STATUS_ERROR, STATUS_NEW, Store
@@ -133,7 +132,7 @@ def merge_and_save(
 ) -> tuple[int, int]:
     """Apply the glossary, merge words with speakers, store the transcript.
     Returns (turns, words)."""
-    words = asr.flatten_words(asr_result)
+    words = merge.flatten_words(asr_result)
     corrections: list[Correction] = []
     if terms:
         words, fixes = glossary.correct(words, terms, cfg.glossary_match)
@@ -151,114 +150,6 @@ def merge_and_save(
         speaker_embeddings=speaker_embeddings,
     )  # also marks the episode done
     return len(turns), len(words)
-
-
-class Processor:
-    """Holds the loaded models across episodes.
-
-    Model load and CoreML compilation cost several seconds each, so constructing
-    this once per batch rather than once per episode is most of the difference
-    on a long backfill.
-    """
-
-    def __init__(self, cfg: Config, log: Log = print, terms: list[str] | None = None):
-        self.cfg = cfg
-        self.log = log
-        self.terms = terms or []
-        self._diarizer: diarize.Diarizer | None = None
-
-    @property
-    def diarizer(self) -> diarize.Diarizer:
-        if self._diarizer is None:
-            self.log("  loading diarizer…")
-            self._diarizer = diarize.Diarizer(
-                device=self.cfg.device,
-                backend=self.cfg.diarization_backend,
-                model=self.cfg.diarization_model,
-                token=self.cfg.diarization_token,
-                warmup=True,
-                quiet=True,
-            )
-        return self._diarizer
-
-    def process(self, store: Store, episode: Episode, force: bool = False) -> None:
-        label = episode.title or episode.guid
-        self.log(f"[{episode.id}] {label}")
-
-        try:
-            wav = self._ensure_audio(store, episode)
-            asr_result = self._ensure_asr(episode, wav, force)
-            segments = self._ensure_diarization(episode, wav, force)
-            embeddings = _read_embedding_cache(self.cfg.raw_path(episode.guid, "embed"))
-            store.set_raw_keys(episode.id, None, None)  # this machine's own models
-
-            n_turns, n_words = merge_and_save(
-                store,
-                self.cfg,
-                episode,
-                asr_result,
-                segments,
-                self.terms,
-                self.log,
-                speaker_embeddings=embeddings,
-            )
-        except Exception as exc:  # noqa: BLE001
-            self.log(f"  ! failed: {exc}")
-            store.set_status(episode.id, STATUS_ERROR, error=traceback.format_exc(limit=3))
-            return
-
-        # The transcript is committed and the episode is done. Nothing from here on
-        # may change that, so a cleanup problem is logged, not recorded as a failure.
-        self.log(f"  done: {n_turns} turns, {diarize.speaker_count(segments)} speakers, {n_words} words")
-        if not self.cfg.keep_audio:
-            try:
-                self._delete_audio(store, episode, wav)
-            except Exception as exc:  # noqa: BLE001
-                self.log(f"  ! could not delete audio: {exc}")
-
-    # ---- stages ----------------------------------------------------------
-
-    def _ensure_audio(self, store: Store, episode: Episode) -> Path:
-        return prepare_audio(store, self.cfg, episode, self.log)
-
-    def _delete_audio(self, store: Store, episode: Episode, wav: Path) -> None:
-        delete_audio(store, episode, wav)
-
-    def _ensure_asr(self, episode: Episode, wav: Path, force: bool) -> dict[str, Any]:
-        cached = self.cfg.raw_path(episode.guid, "asr")
-        if not force:
-            hit = _read_cache(cached)
-            if hit is not None:
-                return hit
-            if cached.exists():
-                self.log("  asr cache unreadable, redoing")
-        self.log("  transcribing…")
-        result = asr.transcribe(
-            wav,
-            self.cfg.asr_model,
-            self.cfg.language,
-            self.cfg.asr_backend,
-            self.cfg.device,
-        )
-        _write_cache(cached, result)
-        return result
-
-    def _ensure_diarization(self, episode: Episode, wav: Path, force: bool) -> list[dict[str, Any]]:
-        cached = self.cfg.raw_path(episode.guid, "diar")
-        if not force:
-            hit = _read_cache(cached)
-            if hit is not None:
-                return hit
-            if cached.exists():
-                self.log("  diarization cache unreadable, redoing")
-        self.log("  diarizing…")
-        if getattr(self.diarizer, "backend", None) == "senko":
-            segments, embeddings = self.diarizer.run_with_embeddings(wav)
-        else:
-            segments, embeddings = self.diarizer.run(wav), {}
-        _write_cache(cached, segments)
-        _write_cache(self.cfg.raw_path(episode.guid, "embed"), embeddings)
-        return segments
 
 
 def prepare_audio(store: Store, cfg: Config, episode: Episode, log: Log = print) -> Path:
@@ -297,16 +188,14 @@ def raw_output_path(store: Store, cfg: Config, episode: Episode, kind: str) -> P
     key = asr_key if kind == "asr" else diar_key
     if key:
         return cfg.raw_path(episode.guid, kind, key)
-    own = cfg.raw_path(episode.guid, kind)
-    if own.exists():
-        return own
-    # ponytail: transcripts merged before schema 9 have no recorded key and may
-    # come from models this machine no longer has; take the newest cache file.
+    # ponytail: transcripts merged before schema 9 have no recorded key; take
+    # the newest cache file of that kind. Re-merging one records nothing new,
+    # so this guess stays until a worker reprocesses the episode.
     found = sorted(
         cfg.raw_dir.glob(f"{cfg.episode_key(episode.guid)}.{kind}-*.json"),
         key=lambda path: path.stat().st_mtime,
     )
-    return found[-1] if found else own
+    return found[-1] if found else cfg.raw_dir / f"{cfg.episode_key(episode.guid)}.{kind}-missing.json"
 
 
 def remerge(

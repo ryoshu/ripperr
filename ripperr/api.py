@@ -4,7 +4,7 @@ through this class and never touch the storage layer.
     with Ripperr() as rip:
         rip.add_feed("https://example.com/feed.xml")
         rip.sync()
-        rip.process(limit=3, glossary=["Bhayshul Tuten", "Drake Maye"])
+        rip.prepare()       # download audio; a ripperr-worker transcribes it
         for ep in rip.episodes(status="done", updated_since=last_seen):
             transcript = rip.transcript(ep.guid)
 
@@ -39,7 +39,6 @@ from .models import (
 from .identity import guest_hints as extract_guest_hints
 from .pipeline import (
     Log,
-    Processor,
     apply_work_result,
     backfill_feed,
     delete_audio,
@@ -56,7 +55,7 @@ _CACHE_FILE = re.compile(r"^(?P<episode_key>[0-9a-f]{12})\.(?:asr|diar|embed)-[0
 
 
 class ProcessingBusyError(RuntimeError):
-    """A destructive operation was attempted during model processing."""
+    """A destructive operation was attempted while another one held the lock."""
 
 
 class LeaseError(RuntimeError):
@@ -112,7 +111,7 @@ class Ripperr:
     def delete_feed(self, feed_id: int) -> None:
         with self.store.processing_lock() as acquired:
             if not acquired:
-                raise ProcessingBusyError("processing already running; retry later")
+                raise ProcessingBusyError("another delete or cache prune is running; retry later")
             episodes = self.store.delete_feed(feed_id)
             for episode in episodes:
                 self._remove_episode_files(episode)
@@ -121,17 +120,13 @@ class Ripperr:
         """Remove stale model caches and return the number of files removed."""
         with self.store.processing_lock() as acquired:
             if not acquired:
-                raise ProcessingBusyError("processing already running; retry later")
+                raise ProcessingBusyError("another delete or cache prune is running; retry later")
             episodes = self.store.episodes()
             active_keys = {self.cfg.episode_key(episode.guid) for episode in episodes}
             current_paths = {
-                path.resolve()
+                raw_output_path(self.store, self.cfg, episode, kind).resolve()
                 for episode in episodes
                 for kind in ("asr", "diar", "embed")
-                for path in (
-                    self.cfg.raw_path(episode.guid, kind),
-                    raw_output_path(self.store, self.cfg, episode, kind),
-                )
             }
             if not self.cfg.raw_dir.exists():
                 return 0
@@ -156,36 +151,6 @@ class Ripperr:
         """Record a feed's `count` newest entries, including older ones a normal
         sync skips. Returns how many were new."""
         return backfill_feed(self.store, feed_id, count, self.log)
-
-    def process(
-        self,
-        limit: int | None = None,
-        *,
-        glossary: list[str] | None = None,
-        retry_errors: bool = False,
-        force: bool = False,
-    ) -> list[Episode]:
-        """Download, transcribe, diarize and merge pending episodes, newest first.
-
-        `glossary` is a list of terms (player names, say) to respell misheard
-        names to. None falls back to the glossary file, if there is one; an empty
-        list turns the glossary off. A second process that tries to run at the
-        same time returns no work immediately. Returns the processed episodes as
-        they now stand.
-        """
-        with self.store.processing_lock() as acquired:
-            if not acquired:
-                self.log("processing already running; skipping")
-                return []
-            todo = self.store.pending(limit=limit, retry_errors=retry_errors)
-            if not todo:
-                return []
-            self.log(f"processing {len(todo)} episode(s)")
-            proc = Processor(self.cfg, self.log, self._terms(glossary))
-            for ep in todo:
-                proc.process(self.store, ep, force=force)
-                self.store.rebuild_speaker_profiles(ep.feed_id, changed_guid=ep.guid)
-            return [self.store.episode(ep.guid) for ep in todo]
 
     # ---- remote workers (docs/worker-contract.md) --------------------------
 

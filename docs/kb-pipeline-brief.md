@@ -1,101 +1,111 @@
 # Knowledge Base Pipeline Brief
 
-Oct 4, 2026 · @Ricky Bacon
+Oct 4, 2026 · @Ricky Bacon · status updated Oct 3, 2026
 
 Build the layer that turns ripperr transcripts (and later scraped pages) into a searchable, citable knowledge base that agents query over MCP, and wire SearXNG podcast discovery into ripperr's feed registry.
 
+## Status
+
+| Item | State |
+| --- | --- |
+| W1. Split compute from ripperr; run ripperr on the Mac Pro | Done |
+| W2. Indexer | Done: running on the Mac Pro under launchd |
+| W6. Evaluation set | Done: 22 questions; hit@5 0.91, hit@10 0.95, mean rank 1.7 |
+| Backfill | Done: `ripperr add --backfill N`, `POST /v1/feeds {"backfill": N}` |
+| W3. MCP retrieval server | Next |
+| W4. Discovery to subscription | After W3 |
+| W5. Scraper | After retrieval works on podcasts alone |
+
 ## Context
 
-The goal is a personal knowledge base: SearXNG finds podcasts worth keeping, ripperr transcribes them, and agents (Claude Code and others) query the result with citations. Ripperr is already a complete ingest, transcribe, diarize and store service with a stable consumer contract, so this work is a consumer of ripperr, not a change to it.
+The goal is a personal knowledge base: SearXNG finds podcasts worth keeping, ripperr transcribes them, and agents (Claude Code and others) query the result with citations.
 
 Data flow, end to end:
 
 1. SearXNG (`podcasts` category: fyyd, podchaser) surfaces shows and episodes of interest.
 2. A discovery helper resolves a result to an RSS feed URL; a human confirms; `POST /v1/feeds` subscribes it in ripperr.
-3. Ripperr on the M5 Pro syncs feeds, downloads, transcribes (mlx-whisper) and diarizes (Senko), then writes turns to SQLite and records a change event.
-4. An always-on indexer polls ripperr's change feed over the tailnet, chunks transcripts, and builds a hybrid (keyword plus vector) index.
-5. An MCP server exposes search and transcript-span tools that return chunks with speaker, timestamp and a source link.
-6. Later, the scraper feeds web pages into the same index through the same document schema.
+3. Ripperr on the Mac Pro syncs feeds, downloads audio and converts it to 16 kHz WAV (`ripperr sync && ripperr prepare`, hourly).
+4. `ripperr-worker` on the M5 claims a prepared episode, runs mlx-whisper and Senko, and uploads the raw output. Ripperr merges it (glossary, speakers, identity), writes turns to SQLite and records a change event.
+5. The indexer, on the same Mac Pro, polls ripperr's change feed, chunks transcripts, and builds a hybrid (keyword plus vector) index.
+6. An MCP server exposes search and transcript-span tools that return chunks with speaker, timestamp and a source link.
+7. Later, the scraper feeds web pages into the same index through the same document schema.
+
+### Repos
+
+Each pair of neighbours shares exactly one HTTP contract and no code.
+
+| Repo | Runs on | Owns | Contract with its neighbours |
+| --- | --- | --- | --- |
+| `ryoshu/ripperr` | Mac Pro (API, sync, prepare); M5 (dashboard, for now) | Feeds, downloads, audio prep, store, merge, glossary, speaker identity, change feed, dashboard | `docs/api.md` for consumers; `docs/worker-contract.md` for workers |
+| `ryoshu/ripperr-worker` | M5 | ASR and diarization only; no database | `docs/worker-contract.md` (schema 1) |
+| `ripperr-knowledge-base` (on the Mac Pro; GitHub remote to create) | Mac Pro | Index, eval set; next the MCP server and discovery | Ripperr's change feed and episode API |
 
 ### Machines and services
 
-| Machine | Tailnet address | Role today | Notes |
+| Machine | Tailnet name | Runs | Notes |
 | --- | --- | --- | --- |
 | `vps-anodyne` (Ubuntu 22.04, 4 CPU, 6 GB RAM) | 100.84.153.34 | SearXNG at `https://search.ryoshu.com`, tailnet-only via nginx; `mcp-searxng` for Claude Code | Also runs `home-proxy.service`, an SSH SOCKS tunnel on `127.0.0.1:1080` that exits through the Mac Pro's residential IP |
-| `rickys-mac-pro` (Intel, macOS 12.7.6, user `hastur`) | 100.71.175.87 | Always-on home server; SOCKS tunnel exit | Sleep disabled (`pmset -a sleep 0`). Cannot run Senko (needs macOS 14+), so it cannot do transcription |
-| M5 Pro laptop | tailnet name to confirm with `tailscale status` | Runs ripperr (needs the compute) and the dashboard | Not always on; any consumer must tolerate it being asleep or off the network |
-
-Ripperr's own ports: `scripts/start-local.sh` runs the API on `127.0.0.1:8876` (`RIPPERR_API_PORT`) and the Vite dashboard on `127.0.0.1:5174`. A bare `ripperr serve` defaults to `8765`. Both bind loopback only; the server refuses any other `--host`.
+| `rickys-mac-pro` (Intel, 12 cores, 32 GB, macOS 12.7.6, user `hastur`) | `rickys-mac-pro.taile4827e.ts.net` | Ripperr API (`tailscale serve` 443 → `127.0.0.1:8876`), hourly `sync && prepare`, the indexer. All launchd agents | Always on, sleep disabled. Python 3.11 (uv-managed), static ffmpeg 9 in `~/.local/bin`. No Homebrew or uv. Audio is deleted after merge (`RIPPERR_KEEP_AUDIO=0`) |
+| M5 Pro laptop (48 GB) | `nyarlathotep.taile4827e.ts.net` | `ripperr-worker` (launchd, installed as a uv tool), the Vite dashboard on `127.0.0.1:5174` proxying to the Mac Pro | Sleeps; a lease left by a sleeping worker expires after 2 h. Serves only srchr on `:8443`; nothing on Funnel |
 
 ### Why these choices
 
-- **Consumer, not fork.** Ripperr's `docs/api.md` names the change feed as the canonical sync contract and says everything else is internal and may change. Depending only on the HTTP surface keeps the two repos independent.
-- **Indexer off the M5.** The M5 sleeps and is where the GPU/NPU time goes. Retrieval should stay available when it is off, so the index lives on an always-on box.
+- **Compute is the only thing that needs the M5.** Ripperr's pipeline already cached model output per stage, and `remerge` rebuilt a transcript from that cache with no models. So the worker produces only that output, and everything else moved to the always-on Mac Pro, which cannot run Senko (macOS 14+) or mlx (Apple Silicon) itself.
+- **Workers poll; nothing connects to the M5.** The laptop needs no inbound access, and the API and change feed stay up while it sleeps.
 - **Own index, not ripperr's FTS5.** Ripperr's `search()` is keyword-only over turns, returns raw per-episode speaker labels, and has no HTTP endpoint. It cannot do semantic retrieval or combine sources.
+- **The knowledge base reads only ripperr's HTTP API.** Ripperr's `docs/api.md` names the change feed as the canonical sync contract and says everything else is internal and may change.
 
-## What ripperr already provides
-
-Source: `docs/api.md`, the README, and a read of the route list in `ripperr/server.py`. The internals of `store.py` were not read beyond the schema headings (schema version 8; tables for feeds, episodes, changes, turns, `turns_fts`, speaker names, embeddings and profiles).
+## What ripperr provides
 
 | Need | Ripperr surface |
 | --- | --- |
-| Subscribe to feeds | `POST /v1/feeds` `{"url", "title"}`, idempotent; also `GET`, `PUT /v1/feeds/{id}`, `DELETE`. RSS or YouTube playlist |
+| Subscribe to feeds | `POST /v1/feeds` `{"url", "title", "backfill"}`, idempotent; also `GET`, `PUT /v1/feeds/{id}`, `DELETE`. RSS or YouTube playlist. `backfill` (1 to 100) also records the feed's N newest episodes |
 | Durable sync stream | `GET /v1/changes?after=SEQ&limit=N`: ascending `seq`, events for metadata, transcript and deleted. Safe to replay a page |
 | Full transcript | `GET /v1/episodes/{guid}`: metadata, `audio_url`, `source_url`, `revision`, ordered turns (`idx`, `start`, `end`, `speaker`, text), `corrections`, `speaker_names`, `speaker_matches`, `guest_hints`. ETag plus `If-None-Match` returns 304 |
 | Episode list | `GET /v1/episodes`: metadata and status only, no turns |
 | Health and cursor | `GET /healthz` returns `ok` and the highest `change_seq` |
-| New-consumer bootstrap | `POST /v1/changes/bootstrap` (token required) emits the current revision of every completed episode |
-| Speaker display names | `PUT` and `DELETE /v1/episodes/{guid}/speakers/{speaker}` (token required) |
+| New-consumer bootstrap | `POST /v1/changes/bootstrap` emits the current revision of every completed episode |
+| Speaker display names | `PUT` and `DELETE /v1/episodes/{guid}/speakers/{speaker}` |
+| Model work | `/v1/work/claim`, `/audio`, `/result`, `/fail`: see `docs/worker-contract.md` |
+
+The server has a token configured, so every request needs `Authorization: Bearer`.
 
 ### Constraints that shape the design
 
-- **Loopback only.** The server rejects non-loopback binds because bearer tokens do not encrypt traffic. Remote access needs a TLS reverse proxy, tunnel or private-network gateway in front.
-- **Writes need a token.** Feed writes and bootstrap are refused when the server has no token configured.
+- **Loopback only.** The server rejects non-loopback binds because bearer tokens do not encrypt traffic. Remote access goes through `tailscale serve`, which terminates TLS.
 - **Revisions.** `revision` increases on every transcript rewrite, and `idx` values and text can change between revisions, so never keep turn positions across revisions. Metadata and speaker-name edits emit events without bumping `revision`, so re-read the episode on every metadata event.
+- **Re-running models changes transcripts.** mlx-whisper is not deterministic across runs: a re-run of the same episode matched the original 96% on normalized words (punctuation, fillers, an occasional name). Avoid needless re-runs; `remerge` re-applies glossary and merge changes without them.
 - **Speaker labels** (`SPEAKER_01`) are per episode and mean nothing across episodes. Display names live in a separate mapping, and `Hit.speaker` from `search()` does not apply it.
-- **No summaries or chapters.** `Episode.summary` is only the feed's own description. Ripperr does not generate summaries.
-- **No backfill.** A new feed takes only its newest episode; later syncs take only entries newer than the newest known one.
+- **No summaries or chapters.** `Episode.summary` is only the feed's own description.
+- **New feeds.** Without `backfill`, a new feed takes only its newest episode; later syncs take only entries newer than the newest known one.
 - **Cursor loss.** A cursor older than the retained log gives `410 Gone` with `reset: true`. Recover with bootstrap, treat the re-emitted set as authoritative, and drop local episodes not re-emitted. Bootstrap appends one event per completed episode for every consumer, so do not call it repeatedly.
 - **Feed validation.** Authenticated feed writes reject literal local or private hosts but do not resolve DNS or follow redirects, so this is not SSRF protection. Direct audio downloads are capped at 1 GiB.
-- **Pre-1.0.** The package is 0.x. Pin a commit, and rely only on the documented HTTP surface.
-- **Platform.** Senko needs macOS 14+ and Python below 3.14. Processing is exclusive per database, so run one `process` at a time.
+- **One embedding space.** Ripperr matches speaker profiles only within `RIPPERR_EMBEDDING_SPACE` (`senko-campplus`); a worker with a different diarization model has its speaker vectors dropped.
+- **Pre-1.0.** Both packages are 0.x. Rely only on the documented HTTP surfaces.
 
 ## Work items
 
-### W1. Expose ripperr on the tailnet and schedule it
+### W1. Split compute from ripperr and move ripperr to the Mac Pro (done)
 
-**Why.** Ripperr is loopback-only, so the VPS and Mac Pro cannot reach it, and a bearer token alone would cross the network unencrypted. `tailscale serve` terminates TLS on the M5 and proxies to loopback, which keeps ripperr's own safety check intact.
+Ripperr runs everything except model inference; `ripperr-worker` runs ASR and diarization. The contract is `docs/worker-contract.md`: workers claim leased episodes, fetch the WAV, and upload model output with its model identity; ripperr validates it, applies it at most once per lease, and merges it. Each transcript records which model run produced it, so `remerge` and `prune_cache` work on a host with no models.
 
-**What.**
+Verified end to end: an episode prepared on the Mac Pro was transcribed by the M5 worker, merged on the Mac Pro, and indexed. A worker re-run of an existing episode produced the same cache keys and, fed the original model output, the same words and diarization.
 
-- Set `RIPPERR_API_TOKEN` in ripperr's `.env` (`start-local.sh` already passes it to the dashboard). Generate a long random value; store it with file mode 600 on each consumer; never commit it. Before enabling the token, update `start-local.sh`'s `/healthz` readiness probe to send the bearer header: the server authenticates health checks too, so the current unauthenticated probe reports a healthy API as a startup failure.
-- Put `tailscale serve` in front of `127.0.0.1:8876` (check `tailscale serve --help` for the flag syntax of the installed version). MagicDNS and HTTPS certificates must be enabled in the Tailscale admin console.
-- Do not bind ripperr to `0.0.0.0`, do not use Tailscale Funnel, and leave the Vite dashboard (`5174`) on loopback.
-- Run the API as an API-only `launchd` service on the M5 rather than relying on the development script, which also starts Vite. Schedule `ripperr sync` and `ripperr run` with `launchd`, and keep the machine awake while processing (`caffeinate`). One `process` at a time.
-- If the tailnet uses ACLs, allow only the indexer host to reach the M5 on 443.
+Ripperr no longer contains any model code: `ripperr run`, the in-process processor, `asr.py`, `diarize.py` and the `apple` and `linux` extras are gone, and `remerge` reads only cached worker output. Later, if wanted, serve the built dashboard from the Mac Pro instead of the laptop's Vite dev server.
 
-**Done when.** From the indexer host, `curl -H "Authorization: Bearer $TOKEN" https://<m5-name>.<tailnet>.ts.net/healthz` returns `ok` and a sequence number, and the same request without the token is rejected.
+### W2. Indexer service (done)
 
-### W2. Indexer service
+Runs on the Mac Pro as `com.ryoshu.ripperr-knowledge-base.indexer`, reading ripperr at `http://127.0.0.1:8876`.
 
-**Why.** This is the missing piece: it turns ripperr's transcripts into something that supports semantic search, merges sources, and stays available when the M5 is off.
+- **Sync loop.** Polls `GET /v1/changes?after=<cursor>&limit=100`. The cursor is stored in the indexer's own SQLite database in the same transaction as the writes it covers, so a crash never advances past unprocessed events.
+- **Per event.** For a transcript event, `GET /v1/episodes/{guid}` with `If-None-Match`; if the revision is newer than the stored one, delete that episode's chunks and insert the new set in one transaction. For a metadata event, re-read and update metadata and speaker names. For a deleted event, remove everything for that guid.
+- **Reset.** On `410` with `reset: true`, call bootstrap and record both `after` and `next_cursor`. Replay every event from `after` through `next_cursor`, paging until that cutoff is reached; collect the guids of completed episodes re-emitted in that range. Only after the full range is committed, remove local podcast episodes absent from that set, then continue polling after `next_cursor`.
+- **Chunking.** Consecutive turns grouped into windows of roughly 200 to 400 tokens, breaking on speaker change, with a little overlap. Chunk identity is a hash of guid, revision and chunk ordinal.
+- **Speaker names.** The raw label is stored on each chunk and the episode's `speaker_names` joined at query time.
+- **Generic document schema** so the scraper can plug in later: `documents` (`doc_id`, `source_type`, `source_id`, `url`, `title`, `published`, `fetched_at`, `revision`, `meta_json`) and `chunks` (`chunk_id`, `doc_id`, `revision`, `ordinal`, `start_s`, `end_s`, `speaker`, `text`).
+- **Index.** SQLite with FTS5 plus `sqlite-vec` in one file, ranks combined with reciprocal rank fusion. Embeddings: Model2Vec `minishlab/potion-retrieval-32M` (512 dimensions, static, CPU-only). A model or chunker change requires a new index and a bootstrap.
 
-**Where.** Recommended: the Mac Pro, which is always on and otherwise idle (check its RAM first). The VPS is the alternative but has 6 GB RAM shared with SearXNG and valkey. Pick one before starting; see decisions below.
-
-**What.**
-
-- **Sync loop.** Poll `GET /v1/changes?after=<cursor>&limit=100`. Persist the cursor in the indexer's own SQLite database, in the same transaction as the writes it covers, so a crash never advances past unprocessed events. Back off and retry when the M5 is unreachable.
-- **Per event.** For a transcript event, `GET /v1/episodes/{guid}` with `If-None-Match`; if the revision is newer than the stored one, delete that episode's chunks and insert the new set in one transaction. For a metadata event, always re-read and update metadata and speaker names. For a deleted event, remove everything for that guid.
-- **Reset.** On `410` with `reset: true`, call bootstrap and record both `after` and `next_cursor`. Replay every event from `after` through `next_cursor`, paging until that cutoff is reached; collect the guids of completed episodes re-emitted in that range. Only after the full range is committed, remove local podcast episodes absent from that set, then continue polling after `next_cursor`. Do not use an incomplete page as the authoritative set. `GET /v1/episodes` can help reconcile the full episode list, but includes episodes without completed transcripts.
-- **Chunking.** Group consecutive turns into windows of roughly 200 to 400 tokens, breaking on speaker change, with a little overlap. Keep `start` and `end` seconds, the speaker label, and the text. Chunk identity is a hash of guid, revision and chunk ordinal, since turn `idx` is not stable and split or overlapping chunks can share a start time.
-- **Speaker names.** Store the raw label on each chunk and join the episode's `speaker_names` at query time, because names can change without a revision bump.
-- **Generic document schema** so the scraper can plug in later: a `documents` table (`doc_id`, `source_type` such as `podcast` or `web`, `source_id` such as the guid, `url`, `title`, `published`, `fetched_at`, `revision`, `meta_json`) and a `chunks` table (`chunk_id`, `doc_id`, `revision`, `ordinal`, `start_s`, `end_s`, `speaker`, `text`).
-- **Index.** SQLite with FTS5 for keywords plus `sqlite-vec` for vectors, in one file. Record the embedding model name and dimension in index metadata so a model change forces a rebuild. Combine keyword and vector ranks with reciprocal rank fusion. On macOS, make sure the Python build allows loadable SQLite extensions (use a Homebrew or `uv`-managed Python, not the system one).
-- **Embeddings.** A small local model that runs acceptably on CPU. Batch it; transcripts arrive in bulk only at bootstrap.
-
-**Done when.** A full rebuild from bootstrap yields the same chunk counts as incremental sync; a new revision replaces the old chunks with no duplicates; a deleted event removes all rows; and killing the process mid-page and restarting neither loses nor duplicates events.
-
-### W3. MCP retrieval server
+### W3. MCP retrieval server (next)
 
 **Why.** MCP is how Claude Code already reaches SearXNG, and the point of the knowledge base is that agents can ask it questions and quote the answer back.
 
@@ -103,7 +113,7 @@ Source: `docs/api.md`, the README, and a read of the route list in `ripperr/serv
 
 - Tools: `kb_search(query, k, filters)` with filters for feed, date range, speaker and source type; `kb_get_span(guid, start, end)` for surrounding transcript; `kb_list_sources()` for what is indexed.
 - Every result carries a citation: show title, feed, published date, speaker display name, start and end seconds, `source_url`, and the episode `guid` and `revision`. For YouTube sources append the start time to the link; for audio feeds, give the timestamp in text.
-- Transport: because the index runs on the Mac Pro and Claude Code must query it from the laptop, expose authenticated streamable HTTP on the tailnet behind nginx or `tailscale serve` for the first usable version. Stdio is an optional local interface on the indexer host, or can be reached from the laptop through an explicit SSH launcher. Cap response size.
+- Transport: authenticated streamable HTTP on the Mac Pro, exposed on the tailnet with `tailscale serve` on its own port, for Claude Code on the laptop. Cap response size.
 - Transcript text is untrusted input. Return it clearly marked as quoted source material so a podcast host saying "ignore previous instructions" is not treated as an instruction.
 
 **Done when.** Claude Code on the laptop can call `kb_search` and `kb_get_span` and get cited results, and a result's timestamp lands on the right passage in the audio.
@@ -114,14 +124,13 @@ Source: `docs/api.md`, the README, and a read of the route list in `ripperr/serv
 
 **What.**
 
-- A small helper (CLI first, MCP tool later) that runs a SearXNG query in the `podcasts` category, resolves each result to a feed URL (the fyyd or Podcast Index API, an iTunes lookup, or the page's `<link rel="alternate" type="application/rss+xml">`), and prints candidates with title, latest episode and feed URL.
-- On confirmation, `POST /v1/feeds` with the URL and title. Ripperr's call is idempotent, so a repeat is harmless.
-- Backfill is a gap: ripperr takes only the newest episode of a new feed. If older episodes matter, that is a change in the ripperr repo (a bounded backfill option), so decide before building around the limitation.
+- A small helper in the knowledge-base repo (CLI first, MCP tool later) that runs a SearXNG query in the `podcasts` category, resolves each result to a feed URL (the fyyd or Podcast Index API, an iTunes lookup, or the page's `<link rel="alternate" type="application/rss+xml">`), and prints candidates with title, latest episode and feed URL.
+- On confirmation, `POST /v1/feeds` with the URL, title and an optional `backfill`. Ripperr's call is idempotent, so a repeat is harmless.
 - Be polite to hosts: no parallel bulk downloads, and no automated subscribing from search results.
 
-**Done when.** A query for a topic yields feed candidates, confirming one creates a feed in ripperr, and its newest episode flows through to the index with no manual steps beyond the confirmation.
+**Done when.** A query for a topic yields feed candidates, confirming one creates a feed in ripperr, and its episodes flow through to the index with no manual steps beyond the confirmation.
 
-### W5. Scraper hookup (after W1 to W3)
+### W5. Scraper hookup (after W3)
 
 **Why.** The knowledge base should also hold web pages, and SearXNG returns only links and snippets. The earlier fetch tests showed a plain HTTP client is not enough for some sites.
 
@@ -133,40 +142,39 @@ Source: `docs/api.md`, the README, and a read of the route list in `ripperr/serv
 - Send cleaned markdown over the tailnet to a small authenticated ingestion endpoint on the Mac Pro, where the indexer owns the SQLite writes. Do not access its SQLite file remotely. Deduplicate on canonical URL plus a content hash, write `source_type = web` into the same `documents` and `chunks` schema, and record `fetched_at` so staleness is visible.
 - Out of scope here: crawling at scale. The user does not run swarms.
 
-### W6. Evaluation set
+### W6. Evaluation set (done)
 
-**Why.** Chunk size, embedding model and ranking are all guesses until measured, and the only way to know a change helped is to rerun the same questions.
+`eval/podcast_questions.jsonl` in the knowledge-base repo: 22 questions tied to real passages, with episode guids and approximate timestamps. `kb eval` reports hit rate at k=5 and k=10 and mean rank. Rerun it after any chunking, embedding or ranking change, and add questions as the collection grows.
 
-**What.** Write 20 to 30 questions whose answers are known to sit in specific episodes, each with the expected `guid` and an approximate timestamp. A script runs `kb_search` and reports hit rate at k=5 and k=10 plus mean rank. Keep it in the indexer repo and rerun it after any chunking, embedding or ranking change. Start it alongside W2, using whichever episodes are already transcribed.
+## Decisions
 
-## Order of work and decisions
-
-Build W1, then W2 and W6 together, then W3, then W4, and leave W5 until retrieval works on podcasts alone. Each item is usable on its own: after W1 you can poll ripperr from anywhere; after W2 you can query the index from a script; after W3 agents can use it.
-
-| Decision | Recommended default | Why |
+| Decision | Chosen | Why |
 | --- | --- | --- |
-| Indexer host | Mac Pro | Always on and idle; the VPS is tight on RAM. Confirm the Mac Pro's RAM and that a Python 3.11+ with loadable SQLite extensions installs on macOS 12 |
-| Vector store | `sqlite-vec` in the indexer's SQLite file | One file, same tooling as ripperr, no extra service. LanceDB is the fallback if extension loading is a problem |
-| Embedding model | A small local model that runs on CPU | Transcripts are text and volumes are modest; avoids sending content to a third party |
-| MCP transport | Streamable HTTP on the tailnet first | The index is on the Mac Pro and the initial Claude Code client is on the laptop; stdio can be added locally or through an SSH launcher |
-| Backfill of older episodes | Decide before W4 | Needs a change in the ripperr repo; without it a new feed contributes only its newest episode |
-| Where the MCP and indexer code live | A new repo, separate from ripperr | Keeps the HTTP contract as the only coupling |
+| Where model inference runs | `ripperr-worker` on the M5, pulling work from ripperr | Only inference needs Apple Silicon and macOS 14+; everything else belongs on an always-on host |
+| Ripperr host | Mac Pro | Always on; 32 GB; base ripperr, ffmpeg, yt-dlp and deno all run on Intel macOS 12 |
+| Indexer host | Mac Pro, next to ripperr | Same machine as its only data source; the VPS is tight on RAM |
+| Vector store | `sqlite-vec` in the indexer's SQLite file | One file, no extra service |
+| Embedding model | Model2Vec `potion-retrieval-32M` | Static CPU model that runs on Intel macOS 12, where torch and onnxruntime wheels are unreliable; content stays local |
+| MCP transport | Streamable HTTP on the tailnet | The index is on the Mac Pro and the first client is Claude Code on the laptop |
+| Backfill | Built into ripperr, bounded to 100 | Without it a discovered feed contributes only its newest episode |
+| Audio retention | Deleted after merge on the Mac Pro | Transcripts and `remerge` need only the database and raw model output |
 
 ## Risks and non-goals
 
 **Risks**
 
-- **M5 offline.** Transcription stalls and the change feed is unreachable. The indexer must retry quietly and keep serving what it already has.
-- **Ripperr changes under you.** The package is 0.x. Pin a commit, use only the documented HTTP surface, and rerun the end-to-end check after each ripperr update.
+- **M5 offline.** Transcription stalls; prepared episodes wait in the queue. Everything else, including search, stays up.
+- **Interfaces change under a consumer.** All three repos are 0.x. Change an HTTP contract only with a version bump on that contract, and rerun the end-to-end check after each change.
 - **Speaker names change without a revision bump.** Re-read on every metadata event and join names at query time, or citations will show stale names.
 - **Diarization is imperfect.** Overlapping speech and per-episode labels mean speaker attribution in citations is a hint, not a fact.
 - **Prompt injection through transcripts and scraped pages.** Treat all retrieved text as untrusted quoted material in the MCP responses.
 - **Secrets.** The ripperr token, any DeepInfra token, and the SearXNG and Cloudflare credentials stay in mode-600 files or the service environment, never in repos or chat.
 - **Index drift.** Changing the embedding model or chunking silently degrades results unless the index records them and the eval set is rerun.
+- **macOS privacy controls.** launchd jobs cannot read `~/Documents` unless the program has been granted access, which a background job cannot request. Install long-running jobs outside protected folders (the worker runs as a uv tool for this reason).
 
 **Non-goals**
 
-- Changing ripperr's internals, or replacing its FTS5 search.
+- Replacing ripperr's FTS5 search.
 - SearXNG result caching (deferred on purpose until the existing setup has been pressure-tested).
 - Public exposure of any service. Everything stays on the tailnet; no Funnel.
 - Crawling or transcribing at scale. Requests stay polite and sequential.

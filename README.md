@@ -1,50 +1,41 @@
 # ripperr
 
-Subscribe to podcast feeds (RSS or YouTube playlists), transcribe and diarize them
-locally, store everything in SQLite, and keep model backends swappable. No UI or
-cloud service is required. Apple Silicon and Linux are supported.
-Meant to be used from Python (`ripperr.api.Ripperr`) as well as from the CLI.
+Subscribe to podcast feeds (RSS or YouTube playlists), get them transcribed and
+diarized, store everything in SQLite, and serve it to other programs. Model
+inference runs in a separate worker ([ripperr-worker](https://github.com/ryoshu/ripperr-worker)),
+so ripperr itself needs no ML runtime and runs on any machine with Python 3.11+
+and ffmpeg. Meant to be used from Python (`ripperr.api.Ripperr`) as well as from
+the CLI.
 
 ```
-RSS / YouTube ──▶ download ──▶ ffmpeg 16k mono ──┬──▶ ASR backend ──▶ words
-                                                 └──▶ diarization backend ──▶ speaker segments
-                                                                               │
-                        glossary respelling ──▶ merge by temporal overlap ◀────┘
-                                                         │
-                                                   SQLite + FTS5
+RSS / YouTube ──▶ download ──▶ ffmpeg 16k mono ──▶ [worker: ASR + diarization] ──▶ words, speaker segments
+                                                                                         │
+                         glossary respelling ──▶ merge by temporal overlap ◀────────────┘
+                                                          │
+                                                    SQLite + FTS5 ──▶ change feed, HTTP API
 ```
 
 ## Architecture
 
-On Apple Silicon, **mlx-whisper** runs Whisper on the Metal GPU and **Senko** is a tuned fork of the
-3D-Speaker pipeline (pyannote segmentation-3.0 for VAD, CAM++ for embeddings,
-spectral or UMAP+HDBSCAN clustering) that runs both models through CoreML on
-macOS instead of PyTorch. Roughly an hour of audio diarized in single-digit
-seconds on an M3, versus minutes for pyannote on MPS.
-
-On Linux, `faster-whisper` provides ASR and `pyannote.audio` provides speaker
-diarization. The Linux diarization model is downloaded from Hugging Face and may
-require accepting the model terms and setting `RIPPERR_HF_TOKEN`.
-
-Both run on the same normalized 16 kHz mono WAV, so the conversion happens once.
+Ripperr owns feeds, downloads, audio preparation, the store, the merge,
+glossary corrections, speaker identity and the HTTP API. A worker claims a
+prepared episode over HTTP, runs speech recognition and diarization on its
+16 kHz WAV, and uploads the raw output; ripperr merges it. Workers only poll,
+so one can run on a laptop that sleeps: an unfinished episode's lease expires
+and it goes back in the queue. The protocol is
+[docs/worker-contract.md](docs/worker-contract.md).
 
 ## Setup
 
 ```bash
-brew install ffmpeg                 # macOS
+brew install ffmpeg                 # macOS; elsewhere use the system package manager
 uv venv --python 3.13 && source .venv/bin/activate
-uv pip install -e ".[apple]"        # Apple Silicon
-# Linux: install ffmpeg with the system package manager, then use .[linux]
-# uv pip install -e ".[linux]"
+uv pip install -e ".[youtube]"      # drop [youtube] if you only use RSS feeds
 npm ci --prefix frontend           # dashboard dependencies
 ```
 
-The `apple` extra installs Senko from a pinned git commit, the one this code was
-tested against. Senko does have a PyPI release now (0.1.0), but its output shape has
-changed between versions, so an exact pin is for reproducibility, not because
-packaging requires it. To upgrade, bump the SHA in `pyproject.toml` and re-run a real
-episode. Senko needs Python below 3.14, the Xcode Command Line Tools and macOS 14+.
-Unlike pyannote's own pipeline, no Hugging Face token or gated-model acceptance is required.
+Then set up at least one [ripperr-worker](https://github.com/ryoshu/ripperr-worker)
+pointing at this server.
 
 ## Usage
 
@@ -52,11 +43,10 @@ Unlike pyannote's own pipeline, no Hugging Face token or gated-model acceptance 
 ripperr add https://example.com/feed.xml
 ripperr add https://example.com/feed.xml --backfill 10   # also take the 10 newest
 ripperr sync                    # poll feeds, record new episodes
-ripperr run --limit 3           # download + transcribe + diarize
+ripperr prepare                 # download + normalize for workers
 ripperr show 12 --out ep12.md   # markdown transcript
 ripperr search "interest rates"
 ripperr status
-ripperr prepare                 # download + normalize only, for remote workers
 ```
 
 Maintenance operations such as `prune_changes()` and `prune_cache()` are
@@ -68,14 +58,7 @@ Settings come from the environment:
 | Variable | Effect |
 | --- | --- |
 | `RIPPERR_ROOT` | where the database, audio and cache live (default `~/ripperr`) |
-| `RIPPERR_ASR_BACKEND` | `auto`, `mlx`, or `faster-whisper` |
-| `RIPPERR_DIARIZATION_BACKEND` | `auto`, `senko`, or `pyannote` |
-| `RIPPERR_DEVICE` | `auto`, `cpu`, or `cuda` |
-| `RIPPERR_ASR_MODEL` | Whisper model (MLX default on Apple, `large-v3` on Linux) |
-| `RIPPERR_DIARIZATION_MODEL` | pyannote model (default `pyannote/speaker-diarization-community-1`) |
-| `RIPPERR_HF_TOKEN` | Hugging Face token for the Linux pyannote model |
-| `RIPPERR_LANGUAGE` | force a language instead of auto-detecting |
-| `RIPPERR_KEEP_AUDIO=0` | delete audio after processing |
+| `RIPPERR_KEEP_AUDIO=0` | delete audio once a worker's result is merged |
 | `RIPPERR_GLOSSARY` | glossary file (default `<root>/glossary.txt`) |
 | `RIPPERR_DEEPINFRA_TOKEN` | optional DeepInfra token for LLM guest extraction (`DEEPINFRA_TOKEN` also works) |
 | `RIPPERR_DEEPINFRA_MODEL` | DeepInfra model (default `deepseek-ai/DeepSeek-V4-Flash-0731`) |
@@ -107,17 +90,11 @@ never modified, so `ripperr remerge <id>` re-applies a changed glossary in secon
 What goes in the glossary is up to the caller. ripperr has no idea what a player
 or a company is.
 
-### Remote workers
+### Unattended operation
 
-Model inference can run on a different machine from everything else. Run
-`ripperr sync && ripperr prepare` on an always-on host with `ripperr serve`
-and a bearer token, and point a worker (the separate `ripperr-worker` repo) at
-it. The worker claims prepared episodes, transcribes and diarizes them, and
-uploads the result; ripperr merges it as if it had run the models itself.
-The HTTP contract is in [docs/worker-contract.md](docs/worker-contract.md).
-
-For unattended operation, a launchd agent or cron job running
-`ripperr sync && ripperr run` is all you need.
+Run `ripperr serve` with a bearer token, and a launchd agent or cron job
+running `scripts/cron.sh` (`ripperr sync && ripperr prepare`). Workers pick up
+whatever is prepared.
 
 ## Python API
 
@@ -127,7 +104,8 @@ Other code should use `ripperr.api.Ripperr`, not the database:
 from ripperr.api import Ripperr
 
 with Ripperr() as rip:
-    rip.process(limit=3, glossary=["Bhayshul Tuten", "Drake Maye"])
+    rip.sync()
+    rip.prepare()                              # a worker transcribes these
     for ep in rip.episodes(status="done", updated_since=last_seen):
         transcript = rip.transcript(ep.guid)   # episode, turns, corrections
     rip.remerge(guid, glossary=new_terms)      # after the glossary changes
@@ -141,9 +119,6 @@ whenever a transcript is rewritten, so a consumer knows when to re-read it.
 compare revisions. The CLI is a client of this same class. The full contract,
 including errors, ordering and consistency, is in [docs/api.md](docs/api.md).
 
-Reading (`episodes`, `transcript`, `search`) needs only the base dependencies;
-processing needs the matching `apple` or `linux` extra. Linux can run on CPU or
-CUDA; set `RIPPERR_DEVICE=cuda` when the CUDA runtime is installed.
 
 ## Layout
 
@@ -151,15 +126,14 @@ CUDA; set `RIPPERR_DEVICE=cuda` when the CUDA runtime is installed.
 | --- | --- |
 | `api.py` | the public `Ripperr` class; CLI and other callers use only this |
 | `models.py` | plain dataclasses returned by the API |
-| `config.py` | paths, model choices and thresholds, overridable from the environment |
+| `config.py` | paths and thresholds, overridable from the environment |
 | `feeds.py` | RSS parsing, enclosure download |
 | `youtube.py` | YouTube playlists, audio via yt-dlp |
 | `glossary.py` | phonetic respelling of names from a supplied term list |
 | `audio.py` | ffmpeg normalization to 16 kHz mono WAV |
-| `asr.py` | ASR backends, word-level timestamp normalization |
-| `diarize.py` | diarization backends, segment and embedding normalization |
-| `merge.py` | word→speaker assignment, turn grouping |
-| `pipeline.py` | orchestration, per-stage caching |
+| `merge.py` | word flattening, word→speaker assignment, turn grouping |
+| `pipeline.py` | feed sync, audio preparation, worker results, raw-output cache, merge |
+| `server.py` | HTTP API, change feed, worker endpoints |
 | `store.py` | SQLite schema, FTS5 search |
 
 See the [editable architecture diagram](docs/architecture.drawio).
@@ -194,21 +168,19 @@ pauses longer than `max_turn_gap`.
 
 ## Caching and re-running
 
-ASR and diarization output are written to configuration-keyed files under `raw/`
-before merging. `ripperr remerge <id>` redoes only the glossary and merge steps
-from that cache, so you can tune `max_turn_gap`, the orphan-word logic or the
-glossary across a whole archive in seconds. Changing a model backend, model,
-device, or language selects a fresh cache; `ripperr run --force` replaces the
-current one.
+A worker's ASR and diarization output is written under `raw/`, keyed by the
+episode and by the model run that produced it, and each transcript records
+which run it came from. `ripperr remerge <id>` redoes only the glossary and
+merge steps from that cache, so you can tune `max_turn_gap`, the orphan-word
+logic or the glossary across a whole archive in seconds, without any models.
+Re-running the models is a worker's job; Whisper is not deterministic, so a
+re-run changes the transcript slightly.
 
 ## Known rough edges
 
-- **Senko's output field names.** `diarize.normalize_segments` probes several key
-  aliases because the shape has moved between versions. If it comes back empty,
-  print one raw segment and add the key you see.
 - **Speaker labels are per-episode.** `SPEAKER_00` in one episode has no relation
-  to `SPEAKER_00` in the next. On Mac/Senko, the pipeline now stores one CAM++
-  centroid per episode speaker as a local `SpeakerEmbedding` sample.
+  to `SPEAKER_00` in the next. A Senko worker uploads one CAM++
+  centroid per episode speaker, stored as a `SpeakerEmbedding` sample.
   `ripperr profiles --feed ID` builds show-level centroids from recurring manual
   labels (at least two samples), and `speaker_matches()` can suggest names from
   those profiles without auto-applying a match. `guest_hints()` separately

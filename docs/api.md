@@ -42,11 +42,11 @@ were the feed's own ids.
 | `feeds() -> list[Feed]` | In id order. |
 | `feed(feed_id) -> Feed \| None` | Returns one feed, or `None` if unknown. |
 | `update_feed(feed_id, url, title=None) -> Feed` | Replaces a feed's URL and title. Raises `LookupError` if unknown and `ValueError` if the URL is already registered. |
-| `delete_feed(feed_id) -> None` | Removes a feed and its stored episodes. Raises `LookupError` if unknown and `ProcessingBusyError` if model processing is active. |
-| `prune_cache() -> int` | Removes stale ASR/diarization cache variants and caches for unknown episodes. Raises `ProcessingBusyError` if model processing is active. |
+| `delete_feed(feed_id) -> None` | Removes a feed and its stored episodes. Raises `LookupError` if unknown and `ProcessingBusyError` if another delete or `prune_cache` is running. |
+| `prune_cache() -> int` | Removes cached model output that no transcript was merged from, and caches for unknown episodes. Raises `ProcessingBusyError` if another prune or `delete_feed` is running. |
 | `sync() -> int` | Polls every feed, records episodes not yet seen and returns how many were new. A new feed starts with only its newest episode; later syncs take only entries ahead of the newest known episode, so a historical playlist is not backfilled unless `backfill` is called. For episodes already known it refreshes `title`, `summary`, `published` and `audio_url` when the feed now gives a different value, so corrected metadata reaches the next retry; a value the feed no longer provides never erases the stored one. Status, audio, transcript and `revision` are untouched. A feed that fails to load is logged and skipped; `sync` does not raise for it. |
 | `backfill(feed_id, count) -> int` | Fetches the feed now and records its `count` newest entries, including older ones `sync` skips; returns how many were new. Known entries are refreshed, not duplicated, so repeating it is harmless, and later syncs still take only entries ahead of the newest known one. Raises `ValueError` for a count below 1, `LookupError` for an unknown feed, and the fetch error if the feed cannot be loaded. |
-| `process(limit=None, *, glossary=None, retry_errors=False, force=False) -> list[Episode]` | Downloads, transcribes, diarizes and merges pending episodes, then returns them as they now stand. Processing is exclusive across processes sharing the same database, so a concurrent run returns no work immediately. See "Processing". |
+| `prepare(limit=None, *, retry_errors=False) -> list[Episode]` | Downloads and normalizes pending episodes so workers can claim them; runs no models. Returns the episodes now ready. See "Processing". |
 | `remerge(ref, *, glossary=None) -> Episode` | Redoes the glossary and merge steps from cached model output and returns the episode. Raises `LookupError` for an unknown episode and `FileNotFoundError` if it has no usable cached model output (missing, or unreadable). |
 
 ### Read
@@ -78,11 +78,11 @@ new ──▶ downloaded ──▶ done
   └──────────┴────────▶ error
 ```
 
-- An episode whose audio is already on disk can go from `new` straight to `done`.
-- `process` picks up `new` and `downloaded` episodes, plus `error` ones when
-  `retry_errors=True`. `done` episodes are never picked up again; use `remerge`
-  to rewrite their transcripts from cached model output. `force` only makes a
-  selected pending or retried episode rerun the models instead of using its cache.
+- `prepare` takes `new` episodes, plus `error` ones when `retry_errors=True`, and
+  makes them `downloaded` once their 16 kHz WAV exists. Only `downloaded`
+  episodes can be claimed by a worker; a merged result makes them `done`.
+- `done` episodes are never claimed again; use `remerge` to rewrite their
+  transcripts from cached model output.
 - On failure an episode becomes `error` and `Episode.error` holds a traceback.
   Success sets it back to `None`.
 - `remerge` sets the episode to `done`, including one that was in `error`.
@@ -90,7 +90,7 @@ new ──▶ downloaded ──▶ done
 ## Revisions: how a consumer stays in sync
 
 `Episode.revision` starts at 0 and increases by one every time the transcript is
-rewritten: after `process` finishes an episode, and after every `remerge`. Status
+rewritten: when a worker's result is merged, and after every `remerge`. Status
 changes, such as `new` to `downloaded`, and metadata refreshes from `sync` do not
 change it. `merged_at` is the time of the last rewrite. `updated_at` moves on any
 change, including processing bookkeeping, metadata refreshes, and speaker-name
@@ -153,15 +153,13 @@ positions across revisions.
 
 - Order: episodes with a `published` date first, newest first, then episodes with
   no date (YouTube) by newest id. Dates are stored as ISO 8601 UTC.
-- `process` does not raise for a failing episode. It records the error on that
-  episode, moves on, and returns it with status `error`. This includes a missing
-  ML dependency: install the matching `apple` or `linux` extra for processing.
-- Remote workers: `prepare(limit=None, retry_errors=False)` downloads and
-  normalizes pending episodes without running models, and `claim_work`,
+- Models run in a worker. `prepare` downloads and normalizes; `claim_work`,
   `work_audio`, `submit_work` and `fail_work` implement the lease protocol in
   [worker-contract.md](worker-contract.md). A leased episode is skipped by
-  `process` until its lease expires. `submit_work` raises `LeaseError` when the
+  `prepare` until its lease expires. `submit_work` raises `LeaseError` when the
   lease is not current and `ValueError` for a malformed result.
+- `prepare` does not raise for a failing download. It records the error on that
+  episode, moves on, and leaves it out of the returned list.
 - `glossary`: a list of terms. `None` reads the glossary file (`glossary.txt` under
   the data directory, or `RIPPERR_GLOSSARY`); `[]` turns the glossary off.
 - Only the work up to that transaction can mark an episode `error`. Once the
@@ -236,7 +234,7 @@ the turns. Matching rules and limits are in the README.
   transaction, so they always belong to the same revision even if another process
   commits a rewrite while it runs. Other methods are single queries. Anything that
   combines several calls sees several snapshots.
-- Two processes running `process` on the same database can pick up the same
+- Two processes running `prepare` on the same database can download the same
   episode. Run one at a time.
 
 ## Change-feed server
@@ -304,6 +302,6 @@ episode, which is the one-time bootstrap operation for a new consumer.
 ## Dependencies
 
 Reading (`episodes`, `transcript`, `search`, `stats`, `remerge` from cache) needs
-only the base dependencies. Processing needs `ffmpeg` plus either the `apple`
-extra (MLX/Senko) or the `linux` extra (faster-whisper/pyannote). YouTube also
-needs the `youtube` extra.
+only the base dependencies. `prepare` needs `ffmpeg`, and YouTube feeds need the
+`youtube` extra. Model inference needs a worker
+([ripperr-worker](https://github.com/ryoshu/ripperr-worker)).

@@ -2,22 +2,30 @@ import hashlib
 import json
 import re
 import sqlite3
-import tomllib
 from pathlib import Path
 
 import pytest
 
 from ripperr import pipeline
 from ripperr.api import ChangeLogPrunedError, ProcessingBusyError, Ripperr
-from ripperr.config import Config
+from ripperr.config import Config, stage_key
 from ripperr.models import Turn
-from ripperr.pipeline import Processor, _read_cache, _write_cache
+from ripperr.pipeline import _read_cache, _write_cache
 from ripperr.store import Store, public_guid
 
 
+KEYS = {"asr": "aaaaaaaaaaaa", "diar": "bbbbbbbbbbbb", "embed": "bbbbbbbbbbbb"}
+
+
+def raw(cfg, guid, kind):
+    """Cache path of the model run recorded for `make`'s episode."""
+    return cfg.raw_path(guid, kind, KEYS[kind])
+
+
 def make(tmp_path):
-    """A Ripperr with one episode whose model output is already cached, so
-    remerge runs without any model, network or audio. Returns (rip, guid)."""
+    """A Ripperr with one episode whose model output is already cached, as a
+    worker result leaves it, so remerge runs without any model, network or
+    audio. Returns (rip, guid)."""
     cfg = Config(root=tmp_path)
     rip = Ripperr(cfg, log=lambda _: None)
     fid = rip.add_feed("http://feed").id
@@ -27,9 +35,34 @@ def make(tmp_path):
         {"start": 0, "end": 0.4, "word": "Basial"}, {"start": 0.4, "end": 0.9, "word": "Tootin"},
         {"start": 1, "end": 1.5, "word": "runs"},
     ]
-    cfg.raw_path(guid, "asr").write_text(json.dumps({"segments": [{"words": words}]}))
-    cfg.raw_path(guid, "diar").write_text(json.dumps([{"start": 0, "end": 2, "speaker": "SPEAKER_01"}]))
+    cfg.raw_dir.mkdir(parents=True, exist_ok=True)
+    raw(cfg, guid, "asr").write_text(json.dumps({"segments": [{"words": words}]}))
+    raw(cfg, guid, "diar").write_text(json.dumps([{"start": 0, "end": 2, "speaker": "SPEAKER_01"}]))
+    rip.store.set_raw_keys(rip.episode(guid).id, KEYS["asr"], KEYS["diar"])
     return rip, guid
+
+
+def submit(rip, guid, segments, words=({"start": 0, "end": 1.5, "word": "Basial Tootin runs"},)):
+    """Run one episode through the worker protocol with the given diarization."""
+    ep = rip.episode(guid)
+    src = rip.cfg.audio_dir / "ep.mp3"
+    rip.cfg.audio_dir.mkdir(parents=True, exist_ok=True)
+    src.write_bytes(b"mp3")
+    (rip.cfg.audio_dir / "ep.16k.wav").write_bytes(b"wav")
+    rip.store.set_status(ep.id, "downloaded", audio_path=str(src))
+    claimed, lease, _ = rip.claim_work("test")
+    assert claimed.guid == guid
+    return rip.submit_work(guid, result(lease, segments, words), glossary=[])
+
+
+def result(lease, segments=({"start": 0, "end": 2, "speaker": "SPEAKER_00"},),
+           words=({"start": 0, "end": 1.5, "word": "Basial Tootin runs"},)):
+    return {
+        "schema": 1,
+        "lease_id": lease,
+        "asr": {"config": {"backend": "mlx"}, "segments": [{"start": 0, "end": 2, "text": "", "words": list(words)}]},
+        "diarization": {"config": {"backend": "senko"}, "segments": list(segments)},
+    }
 
 
 # ---- the API surface -------------------------------------------------------
@@ -143,19 +176,12 @@ def test_speaker_matches_use_named_samples_from_the_same_feed(tmp_path):
     rip.close()
 
 
-def test_diarization_recompute_clears_speaker_names(tmp_path, monkeypatch):
+def test_diarization_recompute_clears_speaker_names(tmp_path):
     rip, guid = make(tmp_path)
     rip.remerge(guid, glossary=[])
     rip.set_speaker_name(guid, "SPEAKER_01", "Host")
-    rip.store.set_status(1, "new")
-    rip.cfg.raw_path(guid, "diar").unlink()
 
-    proc = Processor(rip.cfg, lambda _: None)
-    proc._diarizer = type(
-        "D", (), {"run": lambda self, wav: [{"start": 0, "end": 2, "speaker": "SPEAKER_00"}]}
-    )()
-    monkeypatch.setattr(proc, "_ensure_audio", lambda store, episode: Path("x.wav"))
-    proc.process(rip.store, rip.episode(guid))
+    submit(rip, guid, [{"start": 0, "end": 2, "speaker": "SPEAKER_00"}])
 
     assert rip.speaker_names(guid) == []
     assert rip.transcript(guid).turns[0].speaker == "SPEAKER_00"
@@ -166,22 +192,16 @@ def test_failed_merge_then_retry_uses_new_diarization_key(tmp_path, monkeypatch)
     rip, guid = make(tmp_path)
     rip.remerge(guid, glossary=[])
     rip.set_speaker_name(guid, "SPEAKER_01", "Host")
-    rip.store.set_status(1, "new")
-    rip.cfg.raw_path(guid, "diar").unlink()
+    new_speakers = [{"start": 0, "end": 2, "speaker": "SPEAKER_00"}]
 
-    proc = Processor(rip.cfg, lambda _: None)
-    proc._diarizer = type(
-        "D", (), {"run": lambda self, wav: [{"start": 0, "end": 2, "speaker": "SPEAKER_00"}]}
-    )()
-    monkeypatch.setattr(proc, "_ensure_audio", lambda store, episode: Path("x.wav"))
-    monkeypatch.setattr(pipeline, "merge_and_save", lambda *args: (_ for _ in ()).throw(RuntimeError("boom")))
-    proc.process(rip.store, rip.episode(guid))
+    monkeypatch.setattr(pipeline, "merge_and_save", lambda *args, **kw: (_ for _ in ()).throw(RuntimeError("boom")))
+    with pytest.raises(RuntimeError):
+        submit(rip, guid, new_speakers)
+    assert rip.episode(guid).status == "error"
     assert rip.speaker_names(guid)[0].name == "Host"
 
     monkeypatch.undo()
-    proc = Processor(rip.cfg, lambda _: None)
-    monkeypatch.setattr(proc, "_ensure_audio", lambda store, episode: Path("x.wav"))
-    proc.process(rip.store, rip.episode(guid))
+    submit(rip, guid, new_speakers)
     assert rip.speaker_names(guid) == []
     rip.close()
 
@@ -464,7 +484,8 @@ def test_prune_cache_removes_stale_and_orphaned_variants(tmp_path):
     feed = rip.add_feed("http://feed")
     rip.store.add_episode(feed.id, "one", "One", None, "http://audio")
     episode = rip.episodes()[0]
-    current = rip.cfg.raw_path(episode.guid, "asr")
+    rip.store.set_raw_keys(episode.id, KEYS["asr"], KEYS["diar"])
+    current = raw(rip.cfg, episode.guid, "asr")
     stale = rip.cfg.raw_dir / f"{rip.cfg.episode_key(episode.guid)}.asr-deadbeefdead.json"
     orphan = rip.cfg.raw_dir / "0123456789ab.diar-deadbeefdead.json"
     current.parent.mkdir(parents=True, exist_ok=True)
@@ -561,35 +582,14 @@ def test_sync_does_not_backfill_entries_after_first_known_guid(tmp_path, monkeyp
 # ---- cache durability ------------------------------------------------------
 
 
-def test_truncated_caches_are_misses_and_get_rewritten(tmp_path, monkeypatch):
-    rip, guid = make(tmp_path)
-    cfg, ep = rip.cfg, rip.episode(guid)
-    cfg.raw_path(guid, "asr").write_text('{"segments": [{"wor')  # cut off mid-write
-    cfg.raw_path(guid, "diar").write_text("[{")
-    monkeypatch.setattr(pipeline.asr, "transcribe", lambda *a, **k: {"segments": []})
-    proc = Processor(cfg, lambda _: None)
-    proc._diarizer = type("D", (), {"run": lambda self, wav: [{"start": 0, "end": 1, "speaker": "S"}]})()
-
-    assert proc._ensure_asr(ep, Path("x.wav"), force=False) == {"segments": []}
-    assert proc._ensure_diarization(ep, Path("x.wav"), force=False) == [{"start": 0, "end": 1, "speaker": "S"}]
-    assert _read_cache(cfg.raw_path(guid, "asr")) == {"segments": []}
-    assert _read_cache(cfg.raw_path(guid, "diar")) is not None
-
-
-def test_model_cache_changes_with_backend_configuration(tmp_path):
-    guid = "episode"
-    asr_a = Config(root=tmp_path, asr_backend="mlx", asr_model="model-a")
-    asr_b = Config(root=tmp_path, asr_backend="faster-whisper", asr_model="model-a")
-    diar_a = Config(root=tmp_path, diarization_backend="senko")
-    diar_b = Config(root=tmp_path, diarization_backend="pyannote")
-
-    assert asr_a.raw_path(guid, "asr") != asr_b.raw_path(guid, "asr")
-    assert diar_a.raw_path(guid, "diar") != diar_b.raw_path(guid, "diar")
+def test_model_cache_key_changes_with_model_configuration():
+    assert stage_key({"backend": "mlx", "model": "a"}) != stage_key({"backend": "faster-whisper", "model": "a"})
+    assert stage_key({"backend": "senko"}) != stage_key({"backend": "pyannote"})
 
 
 def test_remerge_with_unreadable_cache_says_so(tmp_path):
     rip, guid = make(tmp_path)
-    rip.cfg.raw_path(guid, "diar").write_text("[")
+    raw(rip.cfg, guid, "diar").write_text("[")
     with pytest.raises(FileNotFoundError, match="usable cached"):
         rip.remerge(guid)
 
@@ -642,28 +642,27 @@ def test_failed_transcript_swap_rolls_back_everything(tmp_path):
 def test_cleanup_failure_after_commit_does_not_mark_episode_failed(tmp_path, monkeypatch):
     rip, guid = make(tmp_path)
     rip.cfg.keep_audio = False
-    monkeypatch.setattr(Processor, "_ensure_audio", lambda self, store, ep: Path("x.wav"))
 
-    def boom(self, *a):
+    def boom(*a):
         raise PermissionError("nope")
 
-    monkeypatch.setattr(Processor, "_delete_audio", boom)
-    Processor(rip.cfg, lambda _: None).process(rip.store, rip.episode(guid))
+    monkeypatch.setattr("ripperr.api.delete_audio", boom)
+    submit(rip, guid, [{"start": 0, "end": 2, "speaker": "SPEAKER_00"}])
     ep = rip.episode(guid)
     assert (ep.status, ep.error, ep.revision) == ("done", None, 1)
 
 
 def test_failure_before_commit_marks_error_and_stores_no_transcript(tmp_path, monkeypatch):
     rip, guid = make(tmp_path)
-    monkeypatch.setattr(Processor, "_ensure_audio", lambda self, store, ep: Path("x.wav"))
 
-    def boom(self, *a):
-        raise RuntimeError("model exploded")
+    def boom(*a, **kw):
+        raise RuntimeError("merge exploded")
 
-    monkeypatch.setattr(Processor, "_ensure_asr", boom)
-    Processor(rip.cfg, lambda _: None).process(rip.store, rip.episode(guid))
+    monkeypatch.setattr(pipeline.merge, "merge", boom)
+    with pytest.raises(RuntimeError):
+        submit(rip, guid, [{"start": 0, "end": 2, "speaker": "SPEAKER_00"}])
     ep = rip.episode(guid)
-    assert ep.status == "error" and "model exploded" in ep.error
+    assert ep.status == "error" and "merge exploded" in ep.error
     assert rip.transcript(guid).turns == []
 
 
@@ -693,7 +692,7 @@ def test_transcript_is_one_consistent_snapshot_even_if_another_process_commits(t
 # ---- audio cleanup ---------------------------------------------------------
 
 
-def test_audio_deleted_and_path_cleared_when_downloaded_in_the_same_run(tmp_path, monkeypatch):
+def test_audio_deleted_and_path_cleared_after_a_worker_result(tmp_path, monkeypatch):
     rip, guid = make(tmp_path)
     rip.cfg.keep_audio = False
     src, wav = rip.cfg.audio_dir / "ep.mp3", rip.cfg.audio_dir / "ep.16k.wav"
@@ -701,35 +700,27 @@ def test_audio_deleted_and_path_cleared_when_downloaded_in_the_same_run(tmp_path
     monkeypatch.setattr(pipeline.audio, "to_wav16k", lambda s, d: (wav.write_bytes(b"y"), wav)[1])
     monkeypatch.setattr(pipeline.audio, "duration_seconds", lambda p: 12.0)
 
-    assert rip.episode(guid).audio_path is None  # so this run has to download it
-    Processor(rip.cfg, lambda _: None).process(rip.store, rip.episode(guid))
+    assert rip.episode(guid).audio_path is None  # so prepare has to download it
+    assert len(rip.prepare()) == 1
+    _, lease, _ = rip.claim_work("test")
+    rip.submit_work(guid, result(lease), glossary=[])
 
     ep = rip.episode(guid)
     assert not src.exists() and not wav.exists()
     assert (ep.status, ep.audio_path, ep.duration) == ("done", None, 12.0)
 
 
-def test_audio_path_kept_when_the_source_could_not_be_deleted(tmp_path, monkeypatch):
+def test_audio_path_kept_when_the_source_could_not_be_deleted(tmp_path):
     rip, guid = make(tmp_path)
     rip.cfg.keep_audio = False
     stuck = tmp_path / "stuck"
     stuck.mkdir()  # unlink() on a directory fails, standing in for any deletion error
     rip.store.set_status(1, "downloaded", audio_path=str(stuck))
-    monkeypatch.setattr(Processor, "_ensure_audio", lambda self, store, ep: tmp_path / "ep.16k.wav")
+    _, lease, _ = rip.claim_work("test")
 
-    Processor(rip.cfg, lambda _: None).process(rip.store, rip.episode(guid))
+    rip.submit_work(guid, result(lease), glossary=[])
     ep = rip.episode(guid)
     assert (ep.status, ep.audio_path) == ("done", str(stuck))  # still done, still honest about the file
-
-
-# ---- packaging -------------------------------------------------------------
-
-
-def test_senko_is_pinned_to_a_commit():
-    pyproject = Path(__file__).parent.parent / "pyproject.toml"
-    deps = tomllib.loads(pyproject.read_text())["project"]["optional-dependencies"]["apple"]
-    senko = next(d for d in deps if d.startswith("senko"))
-    assert re.search(r"git\+https://\S+@[0-9a-f]{40}$", senko), senko
 
 
 def test_backfill_records_older_entries_once_and_sync_still_takes_only_new(tmp_path, monkeypatch):

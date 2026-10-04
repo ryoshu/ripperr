@@ -1,4 +1,4 @@
-"""Configuration: paths and model choices.
+"""Configuration: paths and processing settings.
 
 Everything is overridable from the environment so you can point the pipeline at
 an external drive without editing code.
@@ -9,19 +9,10 @@ from __future__ import annotations
 import hashlib
 import json
 import os
-import platform
 from dataclasses import dataclass, field
-from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 
 _CACHE_FORMAT_VERSION = 2
-
-
-def _runtime_version(package: str) -> str | None:
-    try:
-        return version(package)
-    except PackageNotFoundError:
-        return None
 
 
 def stage_key(config: dict[str, object]) -> str:
@@ -38,53 +29,9 @@ def _env_path(name: str, default: Path) -> Path:
     return Path(raw).expanduser() if raw else default
 
 
-def is_apple_silicon() -> bool:
-    return platform.system() == "Darwin" and platform.machine().lower() in {"arm64", "aarch64"}
-
-
-def resolve_asr_backend(backend: str = "auto") -> str:
-    if backend == "auto":
-        return "mlx" if is_apple_silicon() else "faster-whisper"
-    if backend not in {"mlx", "faster-whisper"}:
-        raise ValueError("RIPPERR_ASR_BACKEND must be auto, mlx, or faster-whisper")
-    return backend
-
-
-def resolve_diarization_backend(backend: str = "auto") -> str:
-    if backend == "auto":
-        return "senko" if is_apple_silicon() else "pyannote"
-    if backend not in {"senko", "pyannote"}:
-        raise ValueError("RIPPERR_DIARIZATION_BACKEND must be auto, senko, or pyannote")
-    return backend
-
-
-def _default_asr_model(backend: str) -> str:
-    return "mlx-community/whisper-large-v3-turbo" if backend == "mlx" else "large-v3"
-
-
 @dataclass
 class Config:
     root: Path = field(default_factory=lambda: _env_path("RIPPERR_ROOT", Path.home() / "ripperr"))
-
-    # Processing backends. `auto` keeps the Apple path on Apple Silicon and
-    # selects the Linux adapters everywhere else.
-    asr_backend: str = field(default_factory=lambda: os.environ.get("RIPPERR_ASR_BACKEND", "auto"))
-    diarization_backend: str = field(
-        default_factory=lambda: os.environ.get("RIPPERR_DIARIZATION_BACKEND", "auto")
-    )
-    device: str = field(default_factory=lambda: os.environ.get("RIPPERR_DEVICE", "auto"))
-
-    # ASR. Turbo is the sane default on Apple Silicon: near-large-v3 quality at a
-    # fraction of the runtime. Swap for mlx-community/whisper-large-v3-mlx if you
-    # care more about accuracy than throughput.
-    asr_model: str | None = field(default_factory=lambda: os.environ.get("RIPPERR_ASR_MODEL"))
-    diarization_model: str = field(default_factory=lambda: os.environ.get(
-        "RIPPERR_DIARIZATION_MODEL", "pyannote/speaker-diarization-community-1"
-    ))
-    diarization_token: str | None = field(default_factory=lambda: (
-        os.environ.get("RIPPERR_HF_TOKEN") or os.environ.get("HF_TOKEN")
-    ))
-    language: str | None = field(default_factory=lambda: os.environ.get("RIPPERR_LANGUAGE") or None)
 
     # Optional text-side guest extraction. DeepInfra exposes an OpenAI-compatible
     # endpoint, so this stays a small requests-based integration.
@@ -115,12 +62,6 @@ class Config:
         "RIPPERR_EMBEDDING_SPACE", "senko-campplus"
     ))
 
-    def __post_init__(self) -> None:
-        self.asr_backend = resolve_asr_backend(self.asr_backend)
-        self.diarization_backend = resolve_diarization_backend(self.diarization_backend)
-        if self.asr_model is None:
-            self.asr_model = _default_asr_model(self.asr_backend)
-
     @property
     def db_path(self) -> Path:
         return self.root / "ripperr.db"
@@ -141,42 +82,16 @@ class Config:
         re-running the models."""
         return self.root / "raw"
 
-    def raw_path(self, guid: str, kind: str, key: str | None = None) -> Path:
-        """Cache path keyed by episode and the model configuration for the stage.
-        `key` is a `stage_key` from elsewhere (a worker's model); None means this
-        machine's own configured models."""
+    def raw_path(self, guid: str, kind: str, key: str) -> Path:
+        """Cache path keyed by episode and by the `stage_key` of the model run
+        that produced the output."""
         if kind not in {"asr", "diar", "embed"}:
             raise ValueError("cache kind must be asr, diar, or embed")
-        return self.raw_dir / f"{self.episode_key(guid)}.{kind}-{key or self.cache_key(kind)}.json"
-
-    def cache_key(self, kind: str) -> str:
-        return stage_key(self._cache_config(kind))
+        return self.raw_dir / f"{self.episode_key(guid)}.{kind}-{key}.json"
 
     @staticmethod
     def episode_key(guid: str) -> str:
         return hashlib.sha1(guid.encode()).hexdigest()[:12]
-
-    def _cache_config(self, kind: str) -> dict[str, object]:
-        if kind == "asr":
-            backend = self.asr_backend
-            return {
-                "version": _CACHE_FORMAT_VERSION,
-                "backend": backend,
-                "runtime": _runtime_version(
-                    "mlx-whisper" if backend == "mlx" else "faster-whisper"
-                ),
-                "model": self.asr_model,
-                "device": self.device,
-                "language": self.language,
-            }
-        backend = self.diarization_backend
-        return {
-            "version": _CACHE_FORMAT_VERSION,
-            "backend": backend,
-            "runtime": _runtime_version("senko" if backend == "senko" else "pyannote-audio"),
-            "model": self.diarization_model,
-            "device": self.device,
-        }
 
     def ensure_dirs(self) -> None:
         for d in (self.root, self.audio_dir, self.raw_dir):

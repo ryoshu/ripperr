@@ -20,6 +20,36 @@ from typing import Any
 UNKNOWN = "SPEAKER_?"
 
 
+def flatten_words(result: dict[str, Any]) -> list[dict[str, Any]]:
+    """Pull a flat, time-ordered word list out of Whisper's nested output.
+
+    Falls back to emitting whole segments as pseudo-words if word timestamps are
+    missing, so the merge stage always has something to work with.
+    """
+    words: list[dict[str, Any]] = []
+    for seg in result.get("segments", []):
+        seg_words = seg.get("words")
+        if seg_words:
+            for w in seg_words:
+                start, end = w.get("start"), w.get("end")
+                text = (w.get("word") or w.get("text") or "").strip()
+                if start is None or end is None or not text:
+                    continue
+                words.append({"start": float(start), "end": float(end), "text": text})
+        else:
+            text = (seg.get("text") or "").strip()
+            if text and seg.get("start") is not None:
+                words.append(
+                    {
+                        "start": float(seg["start"]),
+                        "end": float(seg.get("end", seg["start"])),
+                        "text": text,
+                    }
+                )
+    words.sort(key=lambda w: (w["start"], w["end"]))
+    return words
+
+
 def assign_speakers(
     words: list[dict[str, Any]],
     segments: list[dict[str, Any]],

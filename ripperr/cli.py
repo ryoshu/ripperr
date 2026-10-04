@@ -2,7 +2,7 @@
 
     ripperr add https://example.com/feed.xml
     ripperr sync
-    ripperr run --limit 3
+    ripperr prepare
     ripperr show 12
     ripperr search "interest rates"
 """
@@ -50,12 +50,6 @@ def cmd_feeds(args, rip: Ripperr) -> int:
 def cmd_sync(args, rip: Ripperr) -> int:
     print("syncing feeds…")
     print(f"{rip.sync()} new episode(s)")
-    return 0
-
-
-def cmd_run(args, rip: Ripperr) -> int:
-    if not rip.process(limit=args.limit, force=args.force, retry_errors=args.retry):
-        print("nothing pending")
     return 0
 
 
@@ -209,12 +203,6 @@ def build_parser() -> argparse.ArgumentParser:
 
     s = sub.add_parser("sync", help="poll feeds for new episodes")
     s.set_defaults(func=cmd_sync)
-
-    r = sub.add_parser("run", help="download, transcribe and diarize pending episodes")
-    r.add_argument("--limit", type=int, default=None)
-    r.add_argument("--force", action="store_true", help="ignore cached model output")
-    r.add_argument("--retry", action="store_true", help="also retry episodes that failed")
-    r.set_defaults(func=cmd_run)
 
     pr = sub.add_parser("prepare", help="download and normalize pending episodes for remote workers")
     pr.add_argument("--limit", type=int, default=None)

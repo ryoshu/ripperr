@@ -99,10 +99,10 @@ def test_submit_merges_once_records_model_keys_and_remerges_without_models(tmp_p
     with pytest.raises(LeaseError):
         rip.submit_work(guid, _result(lease))  # retried after success: applied at most once
 
-    # This machine has none of the worker's models, so its own cache keys differ;
-    # remerge and prune_cache must follow the keys recorded with the result.
+    # Ripperr has no models; remerge and prune_cache must follow the keys
+    # recorded with the result.
     asr_key, diar_key = rip.store.raw_keys(guid)
-    assert asr_key and diar_key and asr_key != rip.cfg.cache_key("asr")
+    assert asr_key and diar_key
     assert rip.prune_cache() == 0
     assert rip.remerge(guid, glossary=[]).revision == 2
 
