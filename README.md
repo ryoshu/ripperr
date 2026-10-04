@@ -45,6 +45,7 @@ ripperr add https://example.com/feed.xml --backfill 10   # also take the 10 newe
 ripperr sync                    # poll feeds, record new episodes
 ripperr prepare                 # download + normalize for workers
 ripperr show 12 --out ep12.md   # markdown transcript
+ripperr ads --all               # classify ads in every completed episode
 ripperr search "interest rates"
 ripperr status
 ```
@@ -60,9 +61,10 @@ Settings come from the environment:
 | `RIPPERR_ROOT` | where the database, audio and cache live (default `~/ripperr`) |
 | `RIPPERR_KEEP_AUDIO=0` | delete audio once a worker's result is merged |
 | `RIPPERR_GLOSSARY` | glossary file (default `<root>/glossary.txt`) |
-| `RIPPERR_DEEPINFRA_TOKEN` | optional DeepInfra token for LLM guest extraction (`DEEPINFRA_TOKEN` also works) |
+| `RIPPERR_DEEPINFRA_TOKEN` | optional DeepInfra token for guest extraction and ad classification (`DEEPINFRA_TOKEN` also works) |
 | `RIPPERR_DEEPINFRA_MODEL` | DeepInfra model (default `deepseek-ai/DeepSeek-V4-Flash-0731`) |
 | `RIPPERR_DEEPINFRA_BASE_URL` | DeepInfra OpenAI-compatible base URL |
+| `RIPPERR_AUTO_CLASSIFY_ADS=1` | classify ad spans after transcript merges and remerges (requires a DeepInfra token) |
 | `RIPPERR_LEASE_SECONDS` | how long a remote worker holds a claimed episode (default 7200) |
 | `RIPPERR_DASHBOARD_DIR` | built dashboard to serve alongside the API (unset: API only) |
 | `RIPPERR_EMBEDDING_SPACE` | speaker-vector space accepted from workers (default `senko-campplus`) |
@@ -87,6 +89,12 @@ Python. Only two-word terms (first + last name) are matched, so lone surnames pa
 through, and it can misfire on people who aren't in the list; each swap is stored
 with the episode (`Transcript.corrections`) so you can check. Raw ASR output is
 never modified, so `ripperr remerge <id>` re-applies a changed glossary in seconds.
+
+With a DeepInfra token, `ripperr ads <id-or-guid>` classifies sponsor reads,
+self-promotion, affiliate pitches, and crowdfunding asks; `ripperr ads --all`
+backfills completed episodes. Classified ad turns are hidden from normal
+transcript reads and full-text search. Use `ripperr show <id> --include-ads` or
+`transcript(..., include_ads=True)` to read the original transcript.
 
 What goes in the glossary is up to the caller. ripperr has no idea what a player
 or a company is.

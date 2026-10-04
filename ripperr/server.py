@@ -12,8 +12,15 @@ from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, unquote, urlparse
 
-from .api import ChangeLogPrunedError, LeaseError, ProcessingBusyError, Ripperr
+from .api import (
+    ChangeLogPrunedError,
+    LeaseError,
+    ProcessingBusyError,
+    Ripperr,
+    TranscriptChangedError,
+)
 from .config import Config
+from .deepinfra import DeepInfraError
 from .pipeline import WORKER_SCHEMAS
 
 
@@ -76,7 +83,7 @@ def make_handler(cfg: Config, token: str | None = None):
             except LookupError as exc:
                 _json(self, {"error": str(exc)}, HTTPStatus.NOT_FOUND)
             # Keep typed operational errors ahead of the generic HTTP fallbacks.
-            except (ProcessingBusyError, LeaseError) as exc:
+            except (ProcessingBusyError, LeaseError, TranscriptChangedError) as exc:
                 _json(self, {"error": str(exc)}, HTTPStatus.CONFLICT)
             except ChangeLogPrunedError as exc:
                 _json(
@@ -90,6 +97,8 @@ def make_handler(cfg: Config, token: str | None = None):
                 )
             except ValueError as exc:
                 _json(self, {"error": str(exc)}, HTTPStatus.BAD_REQUEST)
+            except DeepInfraError:
+                _json(self, {"error": "DeepInfra ad classification failed"}, HTTPStatus.BAD_GATEWAY)
             except Exception:  # noqa: BLE001 - never leak a traceback or host path over HTTP
                 _json(self, {"error": "internal server error"}, HTTPStatus.INTERNAL_SERVER_ERROR)
 
@@ -97,7 +106,7 @@ def make_handler(cfg: Config, token: str | None = None):
             """Serve a file of the built dashboard, or index.html for its client
             routes. API paths and a server without a dashboard return False."""
             root = cfg.dashboard_dir
-            if root is None or path == "/healthz" or path.startswith("/v1/"):
+            if root is None or path == "/healthz" or path.startswith(("/v1/", "/v2/")):
                 return False
             root = root.resolve()
             target = (root / unquote(path).lstrip("/")).resolve()
@@ -176,9 +185,17 @@ def make_handler(cfg: Config, token: str | None = None):
                 return
 
             prefix = "/v1/episodes/"
-            if parsed.path.startswith(prefix) and parsed.path.count("/") == 3:
+            v2_prefix = "/v2/episodes/"
+            if (
+                (parsed.path.startswith(prefix) or parsed.path.startswith(v2_prefix))
+                and parsed.path.count("/") == 3
+            ):
+                is_v2 = parsed.path.startswith(v2_prefix)
+                prefix = v2_prefix if is_v2 else prefix
                 guid = unquote(parsed.path[len(prefix):])
-                detail = rip.episode_detail(guid)
+                query = parse_qs(parsed.query)
+                include_ads = _boolean(query, "include_ads", False) if is_v2 else True
+                detail = rip.episode_detail(guid, include_ads=include_ads)
                 if detail is None:
                     body = {"error": "not found"}
                     status = HTTPStatus.NOT_FOUND
@@ -192,6 +209,9 @@ def make_handler(cfg: Config, token: str | None = None):
                     )
                     body["corrections"] = [c.__dict__ for c in transcript.corrections]
                     body["turns"] = [t.__dict__ for t in transcript.turns]
+                    if is_v2:
+                        body["ad_spans"] = [span.__dict__ for span in transcript.ad_spans]
+                        body["ads_checked"] = transcript.ads_checked
                     body["speaker_names"] = [_speaker_json(name) for name in transcript.speaker_names]
                     body["speaker_matches"] = [
                         _speaker_match_json(match)
@@ -216,6 +236,21 @@ def make_handler(cfg: Config, token: str | None = None):
             _json(self, {"error": "not found"}, HTTPStatus.NOT_FOUND)
 
         def _post(self, rip: Ripperr, parsed) -> None:
+            prefix = "/v2/episodes/"
+            suffix = "/ads/classify"
+            if parsed.path.startswith(prefix) and parsed.path.endswith(suffix):
+                guid = unquote(parsed.path[len(prefix):-len(suffix)])
+                if not guid or "/" in guid:
+                    raise ValueError("ad classification path must include one episode guid")
+                spans = rip.classify_ads(guid)
+                episode = rip.episode(guid)
+                _json(self, {
+                    "revision": episode.revision,
+                    "ads_checked": True,
+                    "ad_spans": [span.__dict__ for span in spans],
+                })
+                return
+
             if parsed.path == "/v1/changes/bootstrap":
                 after = rip.change_seq()
                 emitted = rip.emit_current()
@@ -475,6 +510,15 @@ def _integer(query, name: str, default: int, minimum: int, maximum: int | None =
     if value < minimum or maximum is not None and value > maximum:
         raise ValueError(f"{name} out of range")
     return value
+
+
+def _boolean(query, name: str, default: bool) -> bool:
+    raw = query.get(name, ["1" if default else "0"])[0].casefold()
+    if raw in {"1", "true", "yes"}:
+        return True
+    if raw in {"0", "false", "no"}:
+        return False
+    raise ValueError(f"{name} must be true or false")
 
 
 def serve(cfg: Config, host: str = "127.0.0.1", port: int = 8765,

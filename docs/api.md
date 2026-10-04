@@ -24,7 +24,7 @@ with Ripperr(Config(root=path), log=print) as rip:
 | `Episode.guid` | The stable public key. Use it to refer to an episode from another system. It is opaque: derived from the feed's URL and the feed's own id for the episode, and unique across all feeds. |
 | `Episode.source_guid` | The feed's own id for the episode (the RSS guid, or a hash of the audio URL if the feed has none; `yt:<video id>` for YouTube). Only unique within one feed. |
 | `Episode.id` | A local integer. It is meaningful only within one database. Methods that take a `ref` accept a guid (`str`) or a local id (`int`). |
-| Turn key | `(guid, idx)`. `idx` is 0-based and contiguous within one revision. |
+| Turn key | `(guid, idx)`. `idx` is 0-based and contiguous in the full stored transcript. Filtered transcript views retain source indexes, so gaps mark omitted ad turns. |
 
 Two feeds that use the same `source_guid` (RSS guids are often short, like `1`) get
 two episodes with different public `guid`s. The public guid is fixed when the
@@ -55,7 +55,8 @@ were the feed's own ids.
 | --- | --- |
 | `episode(ref) -> Episode \| None` | `None` if unknown. |
 | `episodes(*, status=None, updated_since=None, after=0, limit=None) -> list[Episode]` | In id order. `updated_since` is an ISO 8601 UTC timestamp and is **inclusive**. `after` is an exclusive local-id cursor; `limit` caps the returned page. |
-| `transcript(ref) -> Transcript \| None` | The episode, its turns in `idx` order, glossary corrections applied to this revision, and episode-scoped speaker names. `None` if unknown. An episode that is not done normally has no turns. |
+| `transcript(ref, *, include_ads=False) -> Transcript \| None` | The episode, turns in `idx` order, glossary corrections, speaker names, ad spans, and whether ad classification completed. By default, turns covered by classified ad spans are omitted; pass `include_ads=True` for the full stored transcript. `None` if unknown. |
+| `classify_ads(ref) -> list[AdSpan]` | Uses the configured DeepInfra model to identify clear sponsor, self-promotion, affiliate, and crowdfunding reads. Stores timestamp spans and returns them. Requires `RIPPERR_DEEPINFRA_TOKEN` (or `DEEPINFRA_TOKEN`). A changed classification bumps the episode revision and emits a transcript event. |
 | `speaker_names(ref) -> list[SpeakerName]` | Episode-scoped display names for raw diarization labels. |
 | `speaker_embeddings(ref) -> list[SpeakerEmbedding]` | Locally stored per-episode Mac/Senko voice samples, when available. These are not exposed by the HTTP episode response. |
 | `speaker_profiles(feed_id) -> list[SpeakerProfile]` | Show-level normalized voice centroids built from manually named identities. Only names with at least two labeled episode samples are enrolled, which keeps one-off guests out of the recurring profile set. |
@@ -64,7 +65,7 @@ were the feed's own ids.
 | `guest_hints(ref, use_llm=None) -> list[GuestHint]` | Advisory guest-name evidence from explicit phrases in the title, source summary, or opening transcript turns. With `RIPPERR_DEEPINFRA_TOKEN` configured, `use_llm=None` also asks DeepInfra for structured candidates; `use_llm=False` keeps the call local. It returns evidence, not a voice-identification probability. |
 | `set_speaker_name(ref, speaker, name) -> SpeakerName` | Stores a manual display name without changing the raw transcript turn labels. `speaker` must occur in the episode's current turns; otherwise it raises `ValueError`. |
 | `delete_speaker_name(ref, speaker) -> None` | Removes an episode-scoped display name. |
-| `search(query, limit=20) -> list[Hit]` | Full-text search over turns, best match first. The query may use FTS5 syntax; if it is not valid FTS5 (for example `don't`), it is retried as a literal phrase. `Hit.snippet` marks matches with `[` and `]`. |
+| `search(query, limit=20, *, include_ads=False) -> list[Hit]` | Full-text search over turns outside classified ad spans by default, best match first. Pass `include_ads=True` to search the full transcript. The query may use FTS5 syntax; if it is not valid FTS5 (for example `don't`), it is retried as a literal phrase. `Hit.snippet` marks matches with `[` and `]`. |
 | `stats() -> dict[str, int]` | Episode count per status. |
 | `change_seq() -> int` | Highest committed change-feed sequence number. |
 | `changes(after=0, limit=100) -> list[Change]` | Returns cursor-based transcript and metadata change events in ascending sequence order. |
@@ -89,8 +90,9 @@ new ──▶ downloaded ──▶ done
 
 ## Revisions: how a consumer stays in sync
 
-`Episode.revision` starts at 0 and increases by one every time the transcript is
-rewritten: when a worker's result is merged, and after every `remerge`. Status
+`Episode.revision` starts at 0 and increases when the transcript is rewritten,
+after every `remerge`, and when ad classification changes or completes for the
+first time. Status
 changes, such as `new` to `downloaded`, and metadata refreshes from `sync` do not
 change it. `merged_at` is the time of the last rewrite. `updated_at` moves on any
 change, including processing bookkeeping, metadata refreshes, and speaker-name
@@ -125,7 +127,11 @@ A change-feed consumer should:
    episode because metadata can change while `revision` stays the same; an ETag
    or `If-None-Match` check can avoid downloading an unchanged body.
 3. For transcript revisions, re-read `transcript(guid)` and replace whatever it
-   derived from the old turns.
+   derived from the old turns. Python's default transcript omits turns covered
+   by classified ad spans; raw turns remain available with `include_ads=True`.
+   HTTP v1 keeps returning the full transcript. HTTP v2 omits classified ad turns
+   by default, supports `?include_ads=true`, and includes `ad_spans` and
+   `ads_checked` in the detail response.
 4. Treat `deleted` events as removal notifications; the episode endpoint will
    return 404 afterward.
 
@@ -146,8 +152,19 @@ Because `updated_since` is inclusive, the same episode can appear on consecutive
 polls. Compare revisions for transcript changes; metadata events are authoritative
 even when the revision is unchanged. Timestamps have second resolution.
 
-A new revision changes `idx` values and can change turn text. Do not keep turn
-positions across revisions.
+A new revision can change `idx` values, turn text, or ad spans. Do not keep turn
+positions across revisions. Ad spans are stored with timestamp boundaries,
+category, confidence, evidence quote, and detector. Rewriting the transcript
+clears its old ad classification.
+
+`POST /v2/episodes/{guid}/ads/classify` runs classification and requires the
+server bearer token. `GET /v1/episodes/{guid}` keeps returning the full transcript
+for existing consumers. `GET /v2/episodes/{guid}` returns the clean transcript
+view; add `?include_ads=true` to include classified ad turns. `ripperr search`
+also accepts `--include-ads`. The CLI can classify
+one episode with `ripperr ads <id-or-guid>` or the completed archive with
+`ripperr ads --all`. Automatic classification after worker merges and `remerge`
+is opt-in with `RIPPERR_AUTO_CLASSIFY_ADS=1`; it also requires a DeepInfra token.
 
 ## Processing
 

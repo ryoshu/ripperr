@@ -69,7 +69,7 @@ def cmd_status(args, rip: Ripperr) -> int:
 
 
 def cmd_show(args, rip: Ripperr) -> int:
-    tr = rip.transcript(_ref(args.episode))
+    tr = rip.transcript(_ref(args.episode), include_ads=args.include_ads)
     if tr is None:
         print(f"no episode {args.episode}", file=sys.stderr)
         return 1
@@ -77,6 +77,9 @@ def cmd_show(args, rip: Ripperr) -> int:
     lines = [f"# {tr.episode.title or tr.episode.guid}", ""]
     speaker_names = {mapping.speaker: mapping.name for mapping in tr.speaker_names}
     for t in tr.turns:
+        span = next((ad for ad in tr.ad_spans if ad.start < t.end and ad.end > t.start), None)
+        if span:
+            lines.append(f"*[AD: {span.category}, {span.confidence:.2f}]*")
         lines.append(f"**{speaker_names.get(t.speaker, t.speaker)}** ({_fmt_time(t.start)})")
         lines.append(t.text)
         lines.append("")
@@ -91,7 +94,7 @@ def cmd_show(args, rip: Ripperr) -> int:
 
 
 def cmd_search(args, rip: Ripperr) -> int:
-    hits = rip.search(args.query, limit=args.limit)
+    hits = rip.search(args.query, limit=args.limit, include_ads=args.include_ads)
     if not hits:
         print("no matches")
         return 0
@@ -105,6 +108,44 @@ def cmd_remerge(args, rip: Ripperr) -> int:
     ep = rip.remerge(_ref(args.episode))
     print(f"re-merged episode {ep.id}: revision {ep.revision}")
     return 0
+
+
+def cmd_ads(args, rip: Ripperr) -> int:
+    if not rip.cfg.deepinfra_token:
+        print("set RIPPERR_DEEPINFRA_TOKEN (or DEEPINFRA_TOKEN) to classify ads", file=sys.stderr)
+        return 1
+    if args.all and args.episode:
+        print("choose an episode or --all, not both", file=sys.stderr)
+        return 2
+    if not args.all and not args.episode:
+        print("provide an episode id/guid or pass --all", file=sys.stderr)
+        return 2
+    if args.all:
+        episodes = rip.episodes(status="done")
+    else:
+        episode = rip.episode(_ref(args.episode))
+        if episode is None:
+            print(f"no episode {args.episode}", file=sys.stderr)
+            return 1
+        episodes = [episode]
+
+    failed = False
+    for episode in episodes:
+        print(f"{episode.title or episode.guid}")
+        try:
+            spans = rip.classify_ads(episode.guid)
+        except (ValueError, RuntimeError) as exc:
+            print(f"  ! {exc}", file=sys.stderr)
+            failed = True
+            continue
+        if not spans:
+            print("  no ad spans found")
+        for span in spans:
+            print(
+                f"  {_fmt_time(span.start)}–{_fmt_time(span.end)} "
+                f"{span.category} ({span.confidence:.2f}): {span.evidence}"
+            )
+    return 1 if failed else 0
 
 
 def cmd_calibrate(args, rip: Ripperr) -> int:
@@ -215,16 +256,23 @@ def build_parser() -> argparse.ArgumentParser:
     sh = sub.add_parser("show", help="print a transcript as markdown")
     sh.add_argument("episode", help="episode id or guid")
     sh.add_argument("--out", help="write to a file instead of stdout")
+    sh.add_argument("--include-ads", action="store_true", help="include classified ad turns")
     sh.set_defaults(func=cmd_show)
 
     se = sub.add_parser("search", help="full-text search across transcripts")
     se.add_argument("query")
     se.add_argument("--limit", type=int, default=20)
+    se.add_argument("--include-ads", action="store_true", help="include classified ad turns")
     se.set_defaults(func=cmd_search)
 
     rm = sub.add_parser("remerge", help="redo speaker merge from cached model output")
     rm.add_argument("episode", help="episode id or guid")
     rm.set_defaults(func=cmd_remerge)
+
+    ads = sub.add_parser("ads", help="classify ad spans in one or all completed episodes")
+    ads.add_argument("episode", nargs="?", help="episode id or guid")
+    ads.add_argument("--all", action="store_true", help="classify every completed episode")
+    ads.set_defaults(func=cmd_ads)
 
     cal = sub.add_parser("calibrate", help="fit a provisional speaker identity probability")
     cal.add_argument("--feed", type=int, help="feed id; defaults to the On The Couch feed")

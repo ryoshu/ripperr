@@ -1,7 +1,8 @@
 """SQLite storage layer.
 
-The database is the system of record: feeds, episode state, and speaker-attributed
-turns with full-text search. Audio and raw model output live on disk beside it.
+The database is the system of record: feeds, episode state, speaker-attributed
+turns with full-text search, and timestamped ad classifications. Audio and raw
+model output live on disk beside it.
 
 Every public method takes and returns the plain types in models.py, never rows,
 so another backend only has to provide these same methods.
@@ -21,6 +22,7 @@ from pathlib import Path
 from typing import Iterator, Mapping, Sequence
 
 from .models import (
+    AdSpan,
     Change,
     Correction,
     Episode,
@@ -33,7 +35,7 @@ from .models import (
     Turn,
 )
 
-SCHEMA_VERSION = 9
+SCHEMA_VERSION = 10
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS feeds (
@@ -139,6 +141,26 @@ CREATE TABLE IF NOT EXISTS corrections (
 );
 
 CREATE INDEX IF NOT EXISTS idx_corrections_episode ON corrections(episode_id);
+
+CREATE TABLE IF NOT EXISTS ad_spans (
+    episode_guid TEXT NOT NULL REFERENCES episodes(guid) ON DELETE CASCADE,
+    start        REAL NOT NULL CHECK (start >= 0),
+    end          REAL NOT NULL CHECK (end > start),
+    category     TEXT NOT NULL CHECK (category IN ('sponsor', 'self_promotion', 'affiliate', 'crowdfunding')),
+    confidence   REAL NOT NULL CHECK (confidence >= 0 AND confidence <= 1),
+    evidence     TEXT NOT NULL,
+    detector     TEXT NOT NULL,
+    PRIMARY KEY (episode_guid, start, end, category)
+);
+
+CREATE TABLE IF NOT EXISTS ad_checks (
+    episode_guid TEXT PRIMARY KEY REFERENCES episodes(guid) ON DELETE CASCADE,
+    detector     TEXT NOT NULL,
+    checked_at   TEXT NOT NULL,
+    revision     INTEGER NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_ad_spans_episode ON ad_spans(episode_guid, start, end);
 
 CREATE VIRTUAL TABLE IF NOT EXISTS turns_fts USING fts5(
     text,
@@ -965,6 +987,8 @@ class Store:
                         for speaker, embedding in speaker_embeddings.items()
                     ],
                 )
+            c.execute("DELETE FROM ad_spans WHERE episode_guid = ?", (episode["guid"],))
+            c.execute("DELETE FROM ad_checks WHERE episode_guid = ?", (episode["guid"],))
             c.execute("DELETE FROM corrections WHERE episode_id = ?", (episode_id,))
             c.executemany(
                 "INSERT INTO corrections (episode_id, heard, fixed, count) VALUES (?, ?, ?, ?)",
@@ -1053,6 +1077,91 @@ class Store:
         )
         return [Turn(**dict(r)) for r in rows]
 
+    def ad_spans(self, episode_guid: str) -> list[AdSpan]:
+        rows = self.conn.execute(
+            """SELECT episode_guid, start, end, category, confidence, evidence, detector
+               FROM ad_spans WHERE episode_guid = ? ORDER BY start, end""",
+            (episode_guid,),
+        )
+        return [AdSpan(**dict(row)) for row in rows]
+
+    def ads_checked(self, episode_guid: str) -> bool:
+        return self.conn.execute(
+            "SELECT 1 FROM ad_checks WHERE episode_guid = ?", (episode_guid,)
+        ).fetchone() is not None
+
+    def replace_ad_spans(
+        self,
+        episode_guid: str,
+        spans: Sequence[AdSpan],
+        detector: str,
+        *,
+        expected_revision: int,
+    ) -> bool:
+        """Store one classification only if the transcript revision still matches.
+
+        Returns False when a transcript rewrite raced the model request. A newly
+        completed classification emits a transcript change even when it found no
+        ads, so index consumers can rebuild from the clean transcript view.
+        """
+        ordered = sorted(spans, key=lambda span: (span.start, span.end, span.category))
+        with self.tx() as c:
+            episode = c.execute(
+                "SELECT revision FROM episodes WHERE guid = ?", (episode_guid,)
+            ).fetchone()
+            if episode is None:
+                raise LookupError(f"no episode {episode_guid}")
+            if episode["revision"] != expected_revision:
+                return False
+
+            previous = [
+                tuple(row)
+                for row in c.execute(
+                    """SELECT start, end, category, confidence, evidence, detector
+                       FROM ad_spans WHERE episode_guid = ? ORDER BY start, end, category""",
+                    (episode_guid,),
+                )
+            ]
+            current = [
+                (span.start, span.end, span.category, span.confidence, span.evidence, span.detector)
+                for span in ordered
+            ]
+            review = c.execute(
+                "SELECT detector FROM ad_checks WHERE episode_guid = ?", (episode_guid,)
+            ).fetchone()
+            changed = previous != current or review is None or review["detector"] != detector
+            now = _now()
+            if changed:
+                c.execute("DELETE FROM ad_spans WHERE episode_guid = ?", (episode_guid,))
+                c.executemany(
+                    """INSERT INTO ad_spans
+                       (episode_guid, start, end, category, confidence, evidence, detector)
+                       VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                    [
+                        (episode_guid, span.start, span.end, span.category,
+                         span.confidence, span.evidence, span.detector)
+                        for span in ordered
+                    ],
+                )
+                revision = expected_revision + 1
+                c.execute(
+                    "UPDATE episodes SET revision = ?, updated_at = ? WHERE guid = ?",
+                    (revision, now, episode_guid),
+                )
+                self._insert_change(c, episode_guid, revision, "transcript")
+            else:
+                revision = expected_revision
+            c.execute(
+                """INSERT INTO ad_checks (episode_guid, detector, checked_at, revision)
+                   VALUES (?, ?, ?, ?)
+                   ON CONFLICT(episode_guid) DO UPDATE SET
+                     detector = excluded.detector,
+                     checked_at = excluded.checked_at,
+                     revision = excluded.revision""",
+                (episode_guid, detector, now, revision),
+            )
+            return True
+
     def corrections(self, episode_id: int) -> list[Correction]:
         rows = self.conn.execute(
             "SELECT heard, fixed, count FROM corrections WHERE episode_id = ? ORDER BY count DESC, heard",
@@ -1060,21 +1169,27 @@ class Store:
         )
         return [Correction(**dict(r)) for r in rows]
 
-    def search(self, query: str, limit: int = 20) -> list[Hit]:
+    def search(self, query: str, limit: int = 20, *, include_ads: bool = False) -> list[Hit]:
         try:
-            return self._search(query, limit)
+            return self._search(query, limit, include_ads=include_ads)
         except sqlite3.OperationalError:
             # Not valid FTS5 syntax (e.g. "don't", "a-b"): retry as a literal phrase.
-            return self._search('"' + query.replace('"', '""') + '"', limit)
+            return self._search('"' + query.replace('"', '""') + '"', limit, include_ads=include_ads)
 
-    def _search(self, query: str, limit: int) -> list[Hit]:
+    def _search(self, query: str, limit: int, *, include_ads: bool = False) -> list[Hit]:
+        ad_filter = "" if include_ads else """
+                 AND NOT EXISTS (
+                     SELECT 1 FROM ad_spans a
+                     WHERE a.episode_guid = e.guid AND a.start < t.end AND a.end > t.start
+                 )"""
         rows = self.conn.execute(
-            """SELECT t.episode_id, e.guid, e.title AS episode_title, t.speaker, t.start, t.end,
+            f"""SELECT t.episode_id, e.guid, e.title AS episode_title, t.speaker, t.start, t.end,
                       snippet(turns_fts, 0, '[', ']', ' … ', 12) AS snippet
                FROM turns_fts f
                JOIN turns t     ON t.id = f.turn_id
                JOIN episodes e  ON e.id = t.episode_id
                WHERE turns_fts MATCH ?
+                 {ad_filter}
                ORDER BY rank
                LIMIT ?""",
             (query, limit),

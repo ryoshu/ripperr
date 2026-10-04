@@ -33,8 +33,8 @@ def _env_path(name: str, default: Path) -> Path:
 class Config:
     root: Path = field(default_factory=lambda: _env_path("RIPPERR_ROOT", Path.home() / "ripperr"))
 
-    # Optional text-side guest extraction. DeepInfra exposes an OpenAI-compatible
-    # endpoint, so this stays a small requests-based integration.
+    # Optional text-side guest and ad classification. DeepInfra exposes an
+    # OpenAI-compatible endpoint, so this stays a small requests-based integration.
     deepinfra_token: str | None = field(default_factory=lambda: (
         os.environ.get("RIPPERR_DEEPINFRA_TOKEN") or os.environ.get("DEEPINFRA_TOKEN")
     ))
@@ -44,6 +44,9 @@ class Config:
     deepinfra_base_url: str = field(default_factory=lambda: os.environ.get(
         "RIPPERR_DEEPINFRA_BASE_URL", "https://api.deepinfra.com/v1/openai"
     ).rstrip("/"))
+    auto_classify_ads: bool = field(default_factory=lambda: os.environ.get(
+        "RIPPERR_AUTO_CLASSIFY_ADS", "0"
+    ) == "1")
 
     # Turn segmentation
     max_turn_gap: float = 2.0  # seconds of silence that forces a new turn

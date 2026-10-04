@@ -9,9 +9,9 @@ import pytest
 from ripperr import pipeline
 from ripperr.api import ChangeLogPrunedError, ProcessingBusyError, Ripperr
 from ripperr.config import Config, stage_key
-from ripperr.models import Turn
+from ripperr.models import AdSpan, Turn
 from ripperr.pipeline import _read_cache, _write_cache
-from ripperr.store import Store, public_guid
+from ripperr.store import SCHEMA_VERSION, Store, public_guid
 
 
 KEYS = {"asr": "aaaaaaaaaaaa", "diar": "bbbbbbbbbbbb", "embed": "bbbbbbbbbbbb"}
@@ -354,7 +354,7 @@ def test_old_database_is_migrated(tmp_path):
     assert store.add_episode(1, "g", "T", None, "a") is False  # not duplicated on the next sync
     assert store.add_episode(1, "new", "N", None, "b") is True
     assert store.episode(public_guid("u", "new")).source_guid == "new"
-    assert store.conn.execute("PRAGMA user_version").fetchone()[0] == 9
+    assert store.conn.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION
 
 
 def test_current_schema_skips_migration_on_reopen(tmp_path, monkeypatch):
@@ -389,7 +389,7 @@ def test_schema_migrates_old_change_constraint(tmp_path):
     store = Store(db)
     Store._insert_change(store.conn, "episode", 1, "deleted")
     assert store.changes()[0].kind == "deleted"
-    assert store.conn.execute("PRAGMA user_version").fetchone()[0] == 9
+    assert store.conn.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION
     store.close()
 
 
@@ -416,8 +416,44 @@ def test_v2_deleted_events_seed_tombstones(tmp_path):
     assert store.conn.execute(
         "SELECT revision FROM episode_tombstones WHERE guid = 'episode'"
     ).fetchone()[0] == 3
-    assert store.conn.execute("PRAGMA user_version").fetchone()[0] == 9
+    assert store.conn.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION
     store.close()
+
+
+def test_ad_classification_filters_clean_views_and_is_cleared_on_remerge(tmp_path):
+    rip = Ripperr(Config(root=tmp_path), log=lambda _: None)
+    feed = rip.add_feed("http://feed")
+    rip.store.add_episode(feed.id, "ad-episode", "Ads", None, "http://audio")
+    episode = rip.episodes()[0]
+    rip.store.replace_turns(
+        episode.id,
+        [
+            Turn(0, "HOST", 0, 2, "This episode is sponsored by Acme."),
+            Turn(1, "HOST", 2, 4, "Use our code for a discount."),
+            Turn(2, "HOST", 4, 7, "The team announced its schedule today."),
+        ],
+    )
+    episode = rip.episode(episode.guid)
+    span = AdSpan(episode.guid, 0, 4, "sponsor", 0.95, "sponsored by Acme", "test:model")
+    assert rip.store.replace_ad_spans(
+        episode.guid, [span], "test:model", expected_revision=episode.revision
+    )
+
+    clean = rip.transcript(episode.guid)
+    raw = rip.transcript(episode.guid, include_ads=True)
+    assert [turn.idx for turn in clean.turns] == [2]
+    assert [turn.idx for turn in raw.turns] == [0, 1, 2]
+    assert clean.ads_checked is True
+    assert clean.ad_spans == [span]
+    assert rip.search("Acme") == []
+    assert rip.search("Acme", include_ads=True)
+    assert rip.episode(episode.guid).revision == episode.revision + 1
+
+    rip.store.replace_turns(episode.id, [Turn(0, "HOST", 0, 1, "A fresh transcript.")])
+    after_remerge = rip.transcript(episode.guid)
+    assert after_remerge.ad_spans == []
+    assert after_remerge.ads_checked is False
+    rip.close()
 
 
 def test_delete_feed_emits_events_and_removes_owned_files(tmp_path):

@@ -98,6 +98,17 @@ class GuestHint:
 
 
 @dataclass(frozen=True)
+class AdSpan:
+    episode_guid: str
+    start: float
+    end: float
+    category: str  # sponsor | self_promotion | affiliate | crowdfunding
+    confidence: float
+    evidence: str
+    detector: str
+
+
+@dataclass(frozen=True)
 class Hit:
     episode_id: int
     guid: str
@@ -114,6 +125,8 @@ class Transcript:
     turns: list[Turn]
     corrections: list[Correction]  # glossary swaps applied to this revision
     speaker_names: list[SpeakerName] = field(default_factory=list)
+    ad_spans: list[AdSpan] = field(default_factory=list)
+    ads_checked: bool = False
 
 
 @dataclass(frozen=True)

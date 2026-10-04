@@ -10,8 +10,8 @@ through this class and never touch the storage layer.
 
 Episodes are identified by `guid`, which is stable across storage backends. An
 int refers to the local `Episode.id` instead, which the CLI uses for convenience.
-`Episode.revision` increases whenever a transcript is rewritten, so a consumer can
-tell when it needs to re-read one.
+`Episode.revision` increases whenever a transcript is rewritten or its ad spans
+change, so a consumer can tell when it needs to re-read one.
 """
 
 from __future__ import annotations
@@ -22,10 +22,15 @@ from pathlib import Path
 
 from .audio import wav16k_path
 from .config import Config, default_config
-from .deepinfra import DeepInfraError, guest_hints as deepinfra_guest_hints
+from .deepinfra import (
+    DeepInfraError,
+    classify_ad_turns as deepinfra_classify_ad_turns,
+    guest_hints as deepinfra_guest_hints,
+)
 from .glossary import load as load_glossary
 from .models import (
     Change,
+    AdSpan,
     Episode,
     EpisodeDetail,
     Feed,
@@ -71,6 +76,10 @@ class ChangeLogPrunedError(RuntimeError):
         super().__init__(
             f"change log was pruned through sequence {pruned_through}; re-bootstrap required"
         )
+
+
+class TranscriptChangedError(RuntimeError):
+    """The transcript was rewritten while an ad-classification request ran."""
 
 
 class Ripperr:
@@ -194,6 +203,7 @@ class Ripperr:
         except Exception:
             self.store.set_status(ep.id, STATUS_ERROR, error=traceback.format_exc(limit=3))
             raise
+        self._auto_classify_ads(guid)
         self.store.rebuild_speaker_profiles(ep.feed_id, changed_guid=ep.guid)
         if not self.cfg.keep_audio and ep.audio_path:
             try:
@@ -214,6 +224,7 @@ class Ripperr:
         run it after changing the glossary. Bumps the episode's revision."""
         ep = self._episode(ref)
         remerge(self.store, self.cfg, ep, self._terms(glossary), self.log)
+        self._auto_classify_ads(ep.guid)
         self.store.rebuild_speaker_profiles(ep.feed_id, changed_guid=ep.guid)
         return self.store.episode(ep.guid)
 
@@ -241,14 +252,14 @@ class Ripperr:
             status=status, updated_since=updated_since, after_id=after, limit=limit
         )
 
-    def transcript(self, ref: str | int) -> Transcript | None:
+    def transcript(self, ref: str | int, *, include_ads: bool = False) -> Transcript | None:
         with self.store.snapshot():  # episode, turns and corrections from one revision
-            return self._transcript(ref)
+            return self._transcript(ref, include_ads=include_ads)
 
-    def episode_detail(self, ref: str | int) -> EpisodeDetail | None:
+    def episode_detail(self, ref: str | int, *, include_ads: bool = False) -> EpisodeDetail | None:
         """Read all fields used by the HTTP detail response from one DB snapshot."""
         with self.store.snapshot():
-            transcript = self._transcript(ref)
+            transcript = self._transcript(ref, include_ads=include_ads)
             if transcript is None:
                 return None
             episode = transcript.episode
@@ -297,6 +308,55 @@ class Ripperr:
             profiles = self.speaker_profiles(episode.feed_id)
             host_name = self._host_name(episode.feed_id, profiles)
         return self._guest_hints(episode, transcript, host_name, use_llm=use_llm)
+
+    def classify_ads(self, ref: str | int) -> list[AdSpan]:
+        """Use DeepInfra to mark clear ad reads and return their timestamp spans."""
+        if not self.cfg.deepinfra_token:
+            raise ValueError("set RIPPERR_DEEPINFRA_TOKEN (or DEEPINFRA_TOKEN) to classify ads")
+        with self.store.snapshot():
+            episode = self._episode(ref)
+            transcript = self._transcript(episode.guid, include_ads=True)
+        if transcript is None or not transcript.turns:
+            raise ValueError("episode has no transcript turns to classify")
+        detector = f"deepinfra:{self.cfg.deepinfra_model}"
+        candidates = deepinfra_classify_ad_turns(
+            transcript.turns,
+            token=self.cfg.deepinfra_token,
+            model=self.cfg.deepinfra_model,
+            base_url=self.cfg.deepinfra_base_url,
+        )
+        by_index = {turn.idx: turn for turn in transcript.turns}
+        spans = [
+            AdSpan(
+                episode_guid=episode.guid,
+                start=by_index[item["start_turn"]].start,
+                end=by_index[item["end_turn"]].end,
+                category=item["category"],
+                confidence=item["confidence"],
+                evidence=item["evidence"],
+                detector=detector,
+            )
+            for item in candidates
+        ]
+        if not self.store.replace_ad_spans(
+            episode.guid,
+            spans,
+            detector,
+            expected_revision=transcript.episode.revision,
+        ):
+            raise TranscriptChangedError("transcript changed during ad classification; retry")
+        return self.store.ad_spans(episode.guid)
+
+    def _auto_classify_ads(self, guid: str) -> None:
+        if not self.cfg.auto_classify_ads:
+            return
+        if not self.cfg.deepinfra_token:
+            self.log("  ! automatic ad classification skipped: DeepInfra token is not configured")
+            return
+        try:
+            self.classify_ads(guid)
+        except DeepInfraError as exc:
+            self.log(f"  ! automatic ad classification skipped: {exc}")
 
     def _host_name(self, feed_id: int, profiles: list[SpeakerProfile]) -> str | None:
         if profiles:
@@ -365,8 +425,8 @@ class Ripperr:
         if changed:
             self.store.invalidate_feed_metadata(ep.feed_id, changed_guid=ep.guid)
 
-    def search(self, query: str, limit: int = 20) -> list[Hit]:
-        return self.store.search(query, limit)
+    def search(self, query: str, limit: int = 20, *, include_ads: bool = False) -> list[Hit]:
+        return self.store.search(query, limit, include_ads=include_ads)
 
     def stats(self) -> dict[str, int]:
         return self.store.stats()
@@ -396,15 +456,24 @@ class Ripperr:
             raise LookupError(f"no episode {ref}")
         return ep
 
-    def _transcript(self, ref: str | int) -> Transcript | None:
+    def _transcript(self, ref: str | int, *, include_ads: bool = False) -> Transcript | None:
         ep = self.episode(ref)
         if ep is None:
             return None
+        turns = self.store.turns(ep.id)
+        ad_spans = self.store.ad_spans(ep.guid)
+        if not include_ads and ad_spans:
+            turns = [
+                turn for turn in turns
+                if not any(span.start < turn.end and span.end > turn.start for span in ad_spans)
+            ]
         return Transcript(
             ep,
-            self.store.turns(ep.id),
+            turns,
             self.store.corrections(ep.id),
             self.store.speaker_names(ep.guid),
+            ad_spans,
+            self.store.ads_checked(ep.guid),
         )
 
     def _terms(self, glossary: list[str] | None) -> list[str]:

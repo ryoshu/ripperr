@@ -65,6 +65,7 @@ Code is edited on the laptop and pushed to GitHub. The Mac Pro has no GitHub cre
 | Subscribe to feeds | `POST /v1/feeds` `{"url", "title", "backfill"}`, idempotent; also `GET`, `PUT /v1/feeds/{id}`, `DELETE`. RSS or YouTube playlist. `backfill` (1 to 100) also records the feed's N newest episodes |
 | Durable sync stream | `GET /v1/changes?after=SEQ&limit=N`: ascending `seq`, events for metadata, transcript and deleted. Safe to replay a page |
 | Full transcript | `GET /v1/episodes/{guid}`: metadata, `audio_url`, `source_url`, `revision`, ordered turns (`idx`, `start`, `end`, `speaker`, text), `corrections`, `speaker_names`, `speaker_matches`, `guest_hints`. ETag plus `If-None-Match` returns 304 |
+| Filtered transcript and ad classification | `GET /v2/episodes/{guid}` omits classified ad turns and returns `ad_spans`/`ads_checked`; add `?include_ads=true` for the full transcript. `POST /v2/episodes/{guid}/ads/classify` runs DeepInfra classification. The legacy v1 detail remains unchanged. |
 | Episode list | `GET /v1/episodes`: metadata and status only, no turns |
 | Health and cursor | `GET /healthz` returns `ok` and the highest `change_seq` |
 | New-consumer bootstrap | `POST /v1/changes/bootstrap` emits the current revision of every completed episode |
@@ -165,7 +166,7 @@ Not blocking anything; picked up when they start to matter.
 | Lease release on worker error | A worker that hits a server error after claiming leaves the episode for the full lease (2 h) | A `POST /v1/work/{guid}/release` the worker calls on non-model failures |
 | Recorded cache keys for pre-split transcripts | The 17 transcripts merged before schema 9 find raw output by newest cache file; harmless | Goes away when a worker reprocesses them |
 | Grow the eval set | 29 questions, 7 from Fantasy Footballers Dynasty | Keep adding as feeds arrive; rerun `kb eval` after any chunking or ranking change |
-| Ads in the index | Host-read and inserted ads (T-Mobile, Mucinex) are indexed like content. Pattern lists were rejected as too flaky | Have ripperr mark ad segments, then skip or flag them at index time. A flag-and-hide-by-default `is_ad` column was prototyped and reverted (`a4bd028`) |
+| Ads in the index | Host-read and inserted ads (T-Mobile, Mucinex) were indexed like content; pattern lists were rejected as too flaky | Ripperr now classifies timestamped ad spans with DeepInfra, hides those turns from Python's default transcript and search views, and emits a new revision. Run `ripperr ads --all` once to classify the archive; automatic classification is opt-in with `RIPPERR_AUTO_CLASSIFY_ADS=1`. HTTP v2 episode detail omits classified ads; the indexer must read v2 to apply the filter. HTTP v1 keeps its full-transcript behavior. |
 | Host-name discovery | Podchaser matches titles and descriptions, not hosts | Add the iTunes Search API (matches authors) as a second source |
 | MCP search filters | Applied after ranking a pool of 50; a rare feed or speaker can return fewer than k | Push filters into the SQL |
 | MCP store connections | One SQLite connection per tool call | Pool them if latency matters |
