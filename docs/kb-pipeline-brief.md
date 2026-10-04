@@ -10,7 +10,7 @@ Build the layer that turns ripperr transcripts (and later scraped pages) into a 
 | --- | --- |
 | W1. Split compute from ripperr; run ripperr on the Mac Pro | Done |
 | W2. Indexer | Done: running on the Mac Pro under launchd |
-| W6. Evaluation set | Done: 22 questions; hit@5 0.91, hit@10 0.95, mean rank 1.7 |
+| W6. Evaluation set | Done: 29 questions over 24 episodes; hit@5 0.83, hit@10 0.86, mean rank 1.5 (was 0.91 / 0.95 on 22 questions and 17 episodes) |
 | Backfill | Done: `ripperr add --backfill N`, `POST /v1/feeds {"backfill": N}` |
 | W3. MCP retrieval server | Done: `https://rickys-mac-pro.taile4827e.ts.net:8443/mcp`, own bearer token |
 | W4. Discovery to subscription | Done: `kb discover` CLI and `kb_discover` / `kb_subscribe` MCP tools; first subscription (Fantasy Footballers Dynasty, 5 episodes) made through MCP |
@@ -162,7 +162,9 @@ Not blocking anything; picked up when they start to matter.
 | --- | --- | --- |
 | Lease release on worker error | A worker that hits a server error after claiming leaves the episode for the full lease (2 h) | A `POST /v1/work/{guid}/release` the worker calls on non-model failures |
 | Recorded cache keys for pre-split transcripts | The 17 transcripts merged before schema 9 find raw output by newest cache file; harmless | Goes away when a worker reprocesses them |
-| Grow the eval set | The 22 questions come from the first 17 episodes | Add questions from Fantasy Footballers Dynasty and later feeds; rerun `kb eval` after any chunking or ranking change |
+| Grow the eval set | 29 questions, 7 from Fantasy Footballers Dynasty | Keep adding as feeds arrive; rerun `kb eval` after any chunking or ranking change |
+| Tiny chunks on fast-talking shows | The chunker splits at every speaker change, so rapid back-and-forth (Fantasy Footballers) yields chunks like "Welcome in!"; two of the new eval misses look like this | Merge short adjacent turns into one window (labelled with each speaker) up to the word budget; needs a new chunker version and a rebuild |
+| Ads in the index | Host-read and inserted ads (T-Mobile, Mucinex) are indexed like content | Drop chunks matching ad patterns, or let ripperr mark ad segments |
 | Host-name discovery | Podchaser matches titles and descriptions, not hosts | Add the iTunes Search API (matches authors) as a second source |
 | MCP search filters | Applied after ranking a pool of 50; a rare feed or speaker can return fewer than k | Push filters into the SQL |
 | MCP store connections | One SQLite connection per tool call | Pool them if latency matters |
