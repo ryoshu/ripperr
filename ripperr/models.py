@@ -138,6 +138,14 @@ class EpisodeDetail:
 
 
 @dataclass(frozen=True)
+class Worker:
+    name: str
+    created_at: str  # ISO 8601 UTC
+    last_seen: str | None  # last authenticated /v1/work request; None if never
+    lease_guid: str | None  # episode it holds an unexpired lease on, if any
+
+
+@dataclass(frozen=True)
 class Change:
     seq: int
     episode_guid: str

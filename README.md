@@ -48,6 +48,8 @@ ripperr show 12 --out ep12.md   # markdown transcript
 ripperr ads --all               # classify ads in every completed episode
 ripperr search "interest rates"
 ripperr status
+ripperr workers add mac-pro      # prints a token for that worker, once
+ripperr workers                  # last check-in and current lease per worker
 ```
 
 Maintenance operations such as `prune_changes()` and `prune_cache()` are

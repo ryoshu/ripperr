@@ -276,6 +276,12 @@ the bearer token, emits the current revision of every completed episode, and
 returns `after` and `next_cursor`; fetch the emitted events with
 `GET /v1/changes?after=after`.
 
+`GET /v1/workers` lists registered remote workers as
+`{"workers": [{"name", "created_at", "last_seen", "lease_guid"}]}`; `lease_guid`
+is the episode a worker holds an unexpired lease on, or `null`. Workers and their
+tokens are managed with `ripperr workers [add|remove] NAME`; see
+[worker-contract.md](worker-contract.md).
+
 `GET /v1/feeds` returns the registered feed ids, URLs and titles. `POST
 /v1/feeds` accepts `{"url": "https://…", "title": "…", "backfill": N}` and returns the
 idempotently stored feed. The optional `backfill` (1 to 100) also records the feed's N

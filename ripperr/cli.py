@@ -222,6 +222,30 @@ def cmd_identify(args, rip: Ripperr) -> int:
     return 0
 
 
+def cmd_workers(args, rip: Ripperr) -> int:
+    if args.action != "list" and not args.name:
+        print(f"usage: ripperr workers {args.action} NAME", file=sys.stderr)
+        return 2
+    if args.action == "add":
+        token = rip.add_worker(args.name)
+        print(f"worker {args.name!r} added. Its token is shown once; set it as the worker's RIPPERR_API_TOKEN:")
+        print(token)
+        return 0
+    if args.action == "remove":
+        if not rip.remove_worker(args.name):
+            print(f"no worker named {args.name!r}", file=sys.stderr)
+            return 1
+        print(f"worker {args.name!r} removed; its token no longer works")
+        return 0
+    workers = rip.workers()
+    if not workers:
+        print("no registered workers — add one with `ripperr workers add NAME`")
+    for w in workers:
+        lease = f"working on {w.lease_guid}" if w.lease_guid else "idle"
+        print(f"{w.name:<24} last seen {w.last_seen or 'never':<26} {lease}")
+    return 0
+
+
 def cmd_serve(args, rip: Ripperr) -> int:
     from .server import serve
 
@@ -287,6 +311,11 @@ def build_parser() -> argparse.ArgumentParser:
     ident.add_argument("--feed", type=int, help="feed id; defaults to the On The Couch feed")
     ident.add_argument("--llm", action="store_true", help="also ask DeepInfra for guest-name hints")
     ident.set_defaults(func=cmd_identify)
+
+    wk = sub.add_parser("workers", help="list, add or remove remote workers and their tokens")
+    wk.add_argument("action", nargs="?", choices=("list", "add", "remove"), default="list")
+    wk.add_argument("name", nargs="?")
+    wk.set_defaults(func=cmd_workers)
 
     sv = sub.add_parser("serve", help="serve the transcript change feed over HTTP")
     sv.add_argument("--host", default="127.0.0.1")

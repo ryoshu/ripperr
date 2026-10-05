@@ -40,6 +40,7 @@ from .models import (
     SpeakerName,
     SpeakerProfile,
     Transcript,
+    Worker,
 )
 from .identity import guest_hints as extract_guest_hints
 from .pipeline import (
@@ -177,6 +178,24 @@ class Ripperr:
                 continue
             ready.append(self.store.episode(ep.guid))
         return ready
+
+    def add_worker(self, name: str) -> str:
+        """Register a named worker; returns its token, which is not stored."""
+        name = name.strip()
+        if not name or len(name) > 100:
+            raise ValueError("worker name must be 1-100 characters")
+        return self.store.add_worker(name)
+
+    def remove_worker(self, name: str) -> bool:
+        """Revoke a worker's token. Its current lease, if any, simply expires."""
+        return self.store.remove_worker(name)
+
+    def workers(self) -> list[Worker]:
+        return self.store.workers()
+
+    def seen_worker(self, token: str) -> str | None:
+        """The registered worker holding `token`, and record that it checked in."""
+        return self.store.seen_worker(token)
 
     def claim_work(self, worker: str) -> tuple[Episode, str, str] | None:
         """Lease the next prepared episode to a worker: (episode, lease_id, expires)."""

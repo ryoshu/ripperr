@@ -164,3 +164,40 @@ def test_http_worker_round_trip(tmp_path):
     finally:
         server.shutdown()
         thread.join()
+
+
+def test_registered_worker_token_is_scoped_to_work_and_revocable(tmp_path):
+    cfg = Config(root=tmp_path, keep_audio=True)
+    rip = Ripperr(cfg, log=lambda _: None)
+    guid = _downloaded(rip, tmp_path, "ep", "2026-01-01T00:00:00+00:00")
+    worker_token = rip.add_worker("mac-pro")
+    with pytest.raises(ValueError):
+        rip.add_worker("mac-pro")
+    assert rip.workers()[0].last_seen is None
+    rip.close()
+
+    own = {"Authorization": f"Bearer {worker_token}"}
+    server, thread = _server(cfg.db_path, "secret")
+    try:
+        status, _, claim = _post(server, "/v1/work/claim", {"worker": "spoofed", "schema": 1}, own)
+        assert status == 200 and claim["guid"] == guid
+        status, _, _ = _request(server, "GET", "/v1/feeds", headers=own)
+        assert status == 401  # a worker token is good for /v1/work/* only
+        status, _, body = _request(server, "GET", "/v1/workers", headers=TOKEN)
+        [w] = body["workers"]
+        assert (w["name"], w["lease_guid"]) == ("mac-pro", guid)  # the registered name, not the body's
+        assert w["last_seen"] is not None
+    finally:
+        server.shutdown()
+        thread.join()
+
+    rip = Ripperr(cfg, log=lambda _: None)
+    assert rip.remove_worker("mac-pro") and not rip.remove_worker("mac-pro")
+    rip.close()
+    server, thread = _server(cfg.db_path, "secret")
+    try:
+        status, _, _ = _post(server, "/v1/work/claim", {"worker": "mac-pro", "schema": 1}, own)
+        assert status == 401
+    finally:
+        server.shutdown()
+        thread.join()

@@ -33,9 +33,10 @@ from .models import (
     SpeakerName,
     SpeakerProfile,
     Turn,
+    Worker,
 )
 
-SCHEMA_VERSION = 10
+SCHEMA_VERSION = 11
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS feeds (
@@ -162,6 +163,14 @@ CREATE TABLE IF NOT EXISTS ad_checks (
 
 CREATE INDEX IF NOT EXISTS idx_ad_spans_episode ON ad_spans(episode_guid, start, end);
 
+-- Version 11: named remote workers, each with its own token (stored hashed).
+CREATE TABLE IF NOT EXISTS workers (
+    name       TEXT PRIMARY KEY,
+    token_hash TEXT NOT NULL UNIQUE,
+    created_at TEXT NOT NULL,
+    last_seen  TEXT
+);
+
 CREATE VIRTUAL TABLE IF NOT EXISTS turns_fts USING fts5(
     text,
     turn_id     UNINDEXED,
@@ -184,6 +193,10 @@ def public_guid(feed_url: str, source_guid: str) -> str:
 
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
+
+
+def _token_hash(token: str) -> str:
+    return hashlib.sha256(token.encode()).hexdigest()
 
 
 def _published_iso(value: str) -> str | None:
@@ -610,6 +623,44 @@ class Store:
                 ).rowcount
             if taken:
                 return self.episode_by_id(row["id"]), lease_id, expires
+
+    def add_worker(self, name: str) -> str:
+        """Register a worker and return its token. Only a hash is stored, so the
+        token is shown this once."""
+        token = secrets.token_urlsafe(32)
+        try:
+            with self.tx() as c:
+                c.execute(
+                    "INSERT INTO workers (name, token_hash, created_at) VALUES (?, ?, ?)",
+                    (name, _token_hash(token), _now()),
+                )
+        except sqlite3.IntegrityError:
+            raise ValueError(f"worker {name!r} already exists") from None
+        return token
+
+    def remove_worker(self, name: str) -> bool:
+        with self.tx() as c:
+            return c.execute("DELETE FROM workers WHERE name = ?", (name,)).rowcount > 0
+
+    def seen_worker(self, token: str) -> str | None:
+        """The name of the worker holding `token`, recording that it was seen."""
+        digest = _token_hash(token)
+        with self.tx() as c:
+            row = c.execute("SELECT name FROM workers WHERE token_hash = ?", (digest,)).fetchone()
+            if row:
+                c.execute("UPDATE workers SET last_seen = ? WHERE token_hash = ?", (_now(), digest))
+        return row["name"] if row else None
+
+    def workers(self) -> list[Worker]:
+        now = _now()
+        rows = self.conn.execute(
+            """SELECT w.name, w.created_at, w.last_seen,
+                      (SELECT e.guid FROM episodes e WHERE e.lease_worker = w.name
+                         AND e.lease_expires > ? ORDER BY e.lease_expires DESC LIMIT 1) AS lease_guid
+               FROM workers w ORDER BY w.name""",
+            (now,),
+        ).fetchall()
+        return [Worker(r["name"], r["created_at"], r["last_seen"], r["lease_guid"]) for r in rows]
 
     def lease_holder(self, guid: str, lease_id: str) -> Episode | None:
         """The episode if `lease_id` is its current lease. An expired lease still

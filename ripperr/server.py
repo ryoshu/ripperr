@@ -8,6 +8,7 @@ import ipaddress
 import json
 import mimetypes
 import shutil
+from dataclasses import asdict
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, unquote, urlparse
@@ -72,7 +73,9 @@ def make_handler(cfg: Config, token: str | None = None):
                 return
             write = write or parsed.path.startswith(_WORK_PREFIX)  # workers always need the token
             speaker_write = write and _is_speaker_path(parsed.path)
-            if not self._authorized(write=write and not speaker_write):
+            # A registered worker's own token is good for /v1/work/* and nothing else.
+            self._worker = self._registered_worker() if parsed.path.startswith(_WORK_PREFIX) else None
+            if self._worker is None and not self._authorized(write=write and not speaker_write):
                 return
             try:
                 rip = open_ripperr()
@@ -122,6 +125,16 @@ def make_handler(cfg: Config, token: str | None = None):
             self.wfile.write(body)
             return True
 
+        def _registered_worker(self) -> str | None:
+            header = self.headers.get("Authorization", "")
+            if not header.startswith("Bearer ") or (token and hmac.compare_digest(header, f"Bearer {token}")):
+                return None
+            rip = open_ripperr()
+            try:
+                return rip.seen_worker(header[len("Bearer "):])
+            finally:
+                rip.close()
+
         def _authorized(self, *, write: bool = False) -> bool:
             if write and not token:
                 _json(self, {"error": "this endpoint requires the server to have a bearer token configured"},
@@ -155,6 +168,10 @@ def make_handler(cfg: Config, token: str | None = None):
 
             if parsed.path == "/v1/feeds":
                 _json(self, {"feeds": [_feed_json(feed) for feed in rip.feeds()]})
+                return
+
+            if parsed.path == "/v1/workers":
+                _json(self, {"workers": [asdict(w) for w in rip.workers()]})
                 return
 
             if parsed.path == "/v1/episodes":
@@ -263,7 +280,7 @@ def make_handler(cfg: Config, token: str | None = None):
 
             if parsed.path == _WORK_PREFIX + "claim":
                 body = self._json_body()
-                worker = body.get("worker")
+                worker = self._worker or body.get("worker")  # a registered name wins
                 if not isinstance(worker, str) or not worker.strip():
                     raise ValueError("worker is required")
                 if body.get("schema") not in WORKER_SCHEMAS:
