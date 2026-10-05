@@ -126,6 +126,17 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   return response.status === 204 ? (undefined as T) : response.json() as Promise<T>
 }
 
+export type Worker = {
+  name: string
+  created_at: string
+  last_seen: string | null
+  lease_guid: string | null
+}
+
+export async function getWorkers() {
+  return (await request<{ workers: Worker[] }>("/v1/workers")).workers
+}
+
 export const getHealth = () => request<{ ok: boolean; change_seq: number }>("/healthz")
 
 export async function getFeeds() {

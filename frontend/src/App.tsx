@@ -26,12 +26,14 @@ import {
   getEpisodes,
   getFeeds,
   getHealth,
+  getWorkers,
   updateFeed,
   updateSpeaker,
   type Episode,
   type EpisodeDetail,
   type Feed,
   type SpeakerName,
+  type Worker,
 } from "./api"
 
 type Section = "overview" | "feeds" | "podcasts"
@@ -228,6 +230,49 @@ function StatCard({ label, value, tone = "" }: { label: string; value: number | 
   )
 }
 
+const ONLINE_MS = 3 * 60_000  // idle workers poll every minute
+
+function WorkersPanel({ workers, episodes, onOpenEpisode }: {
+  workers: Worker[]
+  episodes: Episode[]
+  onOpenEpisode: (guid: string) => void
+}) {
+  return (
+    <Card shadow="sm" className="panel">
+      <CardHeader className="panel-header">
+        <div>
+          <h2>Workers</h2>
+          <p className="muted">Registered with <code>ripperr workers add</code></p>
+        </div>
+      </CardHeader>
+      <Divider />
+      <CardBody className="pipeline-body">
+        {workers.length ? workers.map((worker) => {
+          // A worker is silent while it transcribes, so its lease, not last_seen, says it is busy.
+          const episode = worker.lease_guid ? episodes.find((item) => item.guid === worker.lease_guid) : undefined
+          const online = worker.last_seen !== null && Date.now() - new Date(worker.last_seen).valueOf() < ONLINE_MS
+          return (
+            <div key={worker.name} className="pipeline-stat">
+              <span>
+                <strong className="worker-name">{worker.name}</strong>
+                <br />
+                {worker.lease_guid ? (
+                  <button type="button" className="link-button" onClick={() => onOpenEpisode(worker.lease_guid!)}>
+                    {episode ? titleFor(episode) : worker.lease_guid}
+                  </button>
+                ) : `last seen ${formatDate(worker.last_seen)}`}
+              </span>
+              <Chip size="sm" variant="flat" color={worker.lease_guid ? "warning" : online ? "success" : "default"}>
+                {worker.lease_guid ? "working" : online ? "online" : "offline"}
+              </Chip>
+            </div>
+          )
+        }) : <p className="muted small">No registered workers yet.</p>}
+      </CardBody>
+    </Card>
+  )
+}
+
 function EpisodeRow({ episode, onOpen, showFeed = true }: { episode: Episode; onOpen: () => void; showFeed?: boolean }) {
   return (
     <button className="episode-row" type="button" onClick={onOpen}>
@@ -250,12 +295,14 @@ function Overview({
   feeds,
   episodes,
   health,
+  workers,
   onOpenEpisode,
   onNavigate,
 }: {
   feeds: Feed[]
   episodes: Episode[]
   health: { ok: boolean; change_seq: number } | null
+  workers: Worker[]
   onOpenEpisode: (guid: string) => void
   onNavigate: (path: string) => void
 }) {
@@ -303,6 +350,7 @@ function Overview({
           </CardBody>
         </Card>
 
+        <div className="stack">
         <Card shadow="sm" className="panel">
           <CardHeader className="panel-header">
             <div>
@@ -319,6 +367,8 @@ function Overview({
             <p className="muted small">Processing remains a CLI/API operation for now; this view focuses on inspection and feed administration.</p>
           </CardBody>
         </Card>
+        <WorkersPanel workers={workers} episodes={episodes} onOpenEpisode={onOpenEpisode} />
+        </div>
       </div>
     </div>
   )
@@ -754,6 +804,7 @@ function App() {
   const [feeds, setFeeds] = useState<Feed[]>([])
   const [episodes, setEpisodes] = useState<Episode[]>([])
   const [health, setHealth] = useState<{ ok: boolean; change_seq: number } | null>(null)
+  const [workers, setWorkers] = useState<Worker[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
 
@@ -767,10 +818,13 @@ function App() {
     setLoading(true)
     setError(null)
     try {
-      const [loadedFeeds, loadedEpisodes, loadedHealth] = await Promise.all([getFeeds(), getEpisodes(), getHealth()])
+      const [loadedFeeds, loadedEpisodes, loadedHealth, loadedWorkers] = await Promise.all([
+        getFeeds(), getEpisodes(), getHealth(), getWorkers(),
+      ])
       setFeeds(loadedFeeds)
       setEpisodes(loadedEpisodes)
       setHealth(loadedHealth)
+      setWorkers(loadedWorkers)
     } catch (err) {
       setError(err instanceof Error ? err.message : "Unable to load Ripperr")
     } finally {
@@ -800,7 +854,7 @@ function App() {
       </header>
       <main className="main-content">
         <ErrorNotice message={error} />
-        {loading && !feeds.length && !episodes.length ? <Loading /> : location.section === "overview" ? <Overview feeds={feeds} episodes={episodes} health={health} onOpenEpisode={(guid) => go(`/episodes/${encodeURIComponent(guid)}`)} onNavigate={go} /> : location.section === "feeds" ? <FeedsView feeds={feeds} episodes={episodes} onReload={reload} /> : location.feedId === null && location.guid === null ? <PodcastsView feeds={feeds} episodes={episodes} onOpen={(feedId) => go(`/podcasts/${feedId}`)} /> : <PodcastView feed={currentFeed} episodes={episodes} selectedGuid={location.guid} onOpen={(guid) => go(`/episodes/${encodeURIComponent(guid)}`)} onBack={() => go(currentFeed ? `/podcasts/${currentFeed.id}` : "/podcasts")} onBackToIndex={() => go("/podcasts")} onReload={reload} />}
+        {loading && !feeds.length && !episodes.length ? <Loading /> : location.section === "overview" ? <Overview feeds={feeds} episodes={episodes} health={health} workers={workers} onOpenEpisode={(guid) => go(`/episodes/${encodeURIComponent(guid)}`)} onNavigate={go} /> : location.section === "feeds" ? <FeedsView feeds={feeds} episodes={episodes} onReload={reload} /> : location.feedId === null && location.guid === null ? <PodcastsView feeds={feeds} episodes={episodes} onOpen={(feedId) => go(`/podcasts/${feedId}`)} /> : <PodcastView feed={currentFeed} episodes={episodes} selectedGuid={location.guid} onOpen={(guid) => go(`/episodes/${encodeURIComponent(guid)}`)} onBack={() => go(currentFeed ? `/podcasts/${currentFeed.id}` : "/podcasts")} onBackToIndex={() => go("/podcasts")} onReload={reload} />}
       </main>
       <footer className="footer"><span>Local dashboard</span><span>•</span><span>change sequence {health?.change_seq ?? "—"}</span></footer>
     </div>

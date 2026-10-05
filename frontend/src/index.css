@@ -71,6 +71,8 @@ button, input, textarea { font: inherit; }
 .pipeline-body { display: grid; gap: 16px; }
 .pipeline-stat { display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid #edf0f2; padding-bottom: 13px; color: #666d78; font-size: 13px; }
 .pipeline-stat strong { color: #1c2026; font-size: 19px; }
+.pipeline-stat .worker-name { font-size: 14px; }
+.link-button { color: inherit; text-align: left; text-decoration: underline; text-underline-offset: 2px; }
 .feed-form { display: grid; gap: 14px; }
 .form-actions { display: flex; justify-content: flex-end; gap: 8px; padding-top: 4px; }
 .feed-row { display: flex; align-items: center; justify-content: space-between; gap: 18px; padding: 15px 20px; border-bottom: 1px solid #edf0f2; }
