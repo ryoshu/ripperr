@@ -132,34 +132,30 @@ def test_http_worker_round_trip(tmp_path):
     cfg = Config(root=tmp_path, keep_audio=True)
     rip = Ripperr(cfg, log=lambda _: None)
     guid = _downloaded(rip, tmp_path, "ep", "2026-01-01T00:00:00+00:00")
+    worker = {"Authorization": f"Bearer {rip.add_worker('m5')}"}
     rip.close()
-
-    open_server, thread = _server(cfg.db_path)  # no token configured
-    try:
-        status, _, _ = _post(open_server, "/v1/work/claim", {"worker": "m5", "schema": 1})
-        assert status == 503  # refused: no token configured
-    finally:
-        open_server.shutdown()
-        thread.join()
 
     server, thread = _server(cfg.db_path, "secret")
     try:
-        status, _, body = _post(server, "/v1/work/claim", {"worker": "m5", "schema": 2}, TOKEN)
+        for headers in ({}, TOKEN):  # no token, or the main API token: neither is a worker's
+            status, _, _ = _post(server, "/v1/work/claim", {"worker": "m5", "schema": 1}, headers)
+            assert status == 401
+        status, _, body = _post(server, "/v1/work/claim", {"worker": "m5", "schema": 2}, worker)
         assert status == 400 and body["supported"] == [1]
-        status, _, claim = _post(server, "/v1/work/claim", {"worker": "m5", "schema": 1}, TOKEN)
+        status, _, claim = _post(server, "/v1/work/claim", {"worker": "m5", "schema": 1}, worker)
         assert status == 200 and claim["guid"] == guid
 
         base = f"http://127.0.0.1:{server.server_port}/v1/work/{guid}"
-        with urlopen(Request(f"{base}/audio?lease_id={claim['lease_id']}", headers=TOKEN)) as response:
+        with urlopen(Request(f"{base}/audio?lease_id={claim['lease_id']}", headers=worker)) as response:
             assert response.headers["Content-Type"] == "audio/wav"
             assert response.read() == b"RIFFwav"
 
-        status, _, body = _request(server, "PUT", f"/v1/work/{guid}/result", _result(claim["lease_id"]), TOKEN)
+        status, _, body = _request(server, "PUT", f"/v1/work/{guid}/result", _result(claim["lease_id"]), worker)
         assert (status, body) == (200, {"guid": guid, "revision": 1})
-        status, _, _ = _request(server, "PUT", f"/v1/work/{guid}/result", _result(claim["lease_id"]), TOKEN)
+        status, _, _ = _request(server, "PUT", f"/v1/work/{guid}/result", _result(claim["lease_id"]), worker)
         assert status == 409
 
-        status, _, _ = _post(server, "/v1/work/claim", {"worker": "m5", "schema": 1}, TOKEN)
+        status, _, _ = _post(server, "/v1/work/claim", {"worker": "m5", "schema": 1}, worker)
         assert status == 204
     finally:
         server.shutdown()

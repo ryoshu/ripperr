@@ -71,11 +71,15 @@ def make_handler(cfg: Config, token: str | None = None):
             parsed = urlparse(self.path)
             if method == "GET" and self._dashboard_file(parsed.path):
                 return
-            write = write or parsed.path.startswith(_WORK_PREFIX)  # workers always need the token
-            speaker_write = write and _is_speaker_path(parsed.path)
-            # A registered worker's own token is good for /v1/work/* and nothing else.
-            self._worker = self._registered_worker() if parsed.path.startswith(_WORK_PREFIX) else None
-            if self._worker is None and not self._authorized(write=write and not speaker_write):
+            # /v1/work/* takes only a registered worker's own token, which is good for nothing else.
+            self._worker = None
+            if parsed.path.startswith(_WORK_PREFIX):
+                self._worker = self._registered_worker()
+                if self._worker is None:
+                    _json(self, {"error": "unauthorized"}, HTTPStatus.UNAUTHORIZED,
+                          {"WWW-Authenticate": "Bearer"})
+                    return
+            elif not self._authorized(write=write and not _is_speaker_path(parsed.path)):
                 return
             try:
                 rip = open_ripperr()
@@ -127,7 +131,7 @@ def make_handler(cfg: Config, token: str | None = None):
 
         def _registered_worker(self) -> str | None:
             header = self.headers.get("Authorization", "")
-            if not header.startswith("Bearer ") or (token and hmac.compare_digest(header, f"Bearer {token}")):
+            if not header.startswith("Bearer "):
                 return None
             rip = open_ripperr()
             try:
@@ -280,14 +284,11 @@ def make_handler(cfg: Config, token: str | None = None):
 
             if parsed.path == _WORK_PREFIX + "claim":
                 body = self._json_body()
-                worker = self._worker or body.get("worker")  # a registered name wins
-                if not isinstance(worker, str) or not worker.strip():
-                    raise ValueError("worker is required")
                 if body.get("schema") not in WORKER_SCHEMAS:
                     _json(self, {"error": "unsupported schema", "supported": list(WORKER_SCHEMAS)},
                           HTTPStatus.BAD_REQUEST)
                     return
-                claimed = rip.claim_work(worker.strip()[:100])
+                claimed = rip.claim_work(self._worker)
                 if claimed is None:
                     self.send_response(HTTPStatus.NO_CONTENT)
                     self.end_headers()

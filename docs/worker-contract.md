@@ -28,24 +28,21 @@ at any point, and its lease simply expires.
 
 ## Endpoints
 
-All require `Authorization: Bearer <token>` (`401` without it). The token is
-either a registered worker's own token or the server's main API token.
+All require `Authorization: Bearer <worker token>`; anything else, including
+the server's main API token, gets `401`.
 
 A worker token comes from `ripperr workers add NAME`, which prints it once
 (ripperr stores only its SHA-256). It is accepted on `/v1/work/*` only, so a
 leaked worker token cannot manage feeds or read transcripts. Requests made with
 it record the worker's `last_seen`, and a claim's lease carries the registered
-name whatever the body's `worker` says. `ripperr workers remove NAME` revokes
+name. `ripperr workers remove NAME` revokes
 it; an outstanding lease simply expires. `GET /v1/workers` (main token) and
 `ripperr workers` list each worker's last check-in and current lease.
 
-The main API token still works on these endpoints for unregistered workers,
-which supply their own `worker` name. A ripperr with no main token configured
-refuses requests that do not carry a registered worker token with `503`.
-
 ### `POST /v1/work/claim`
 
-Body: `{"worker": "<name>", "schema": 1}`.
+Body: `{"schema": 1}`. A `worker` field is ignored; the lease takes the
+registered name of the token.
 
 - `200` `{"guid", "lease_id", "lease_expires", "duration_s"}` leases the
   newest-published claimable episode, matching today's `pending()` order
